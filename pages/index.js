@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
 import Head from "next/head";
+import { processAnalysisText } from "../lib/parser";
 
 export default function Home() {
   const [parsedData, setParsedData] = useState(null);
@@ -99,20 +100,29 @@ export default function Home() {
         }),
       });
       const json = await res.json();
-      setResult(json.text || json.error || "分析失败");
+      const rawText = json.text || json.error || "分析失败";
+      
+      const processed = processAnalysisText(rawText, analysisType);
+      setResult({
+        tables: processed.tables,
+        analysis: processed.analysis
+      });
     } catch (err) {
-      setResult("请求失败：" + err.message);
+      setResult({ tables: "", analysis: "请求失败：" + err.message });
     }
     setLoading(false);
   }
 
   function copyResult() {
-    if (result) navigator.clipboard.writeText(result);
+    if (!result) return;
+    const fullText = (result.tables || '') + '\n\n' + (result.analysis || '');
+    navigator.clipboard.writeText(fullText);
   }
 
   function exportResult() {
     if (!result) return;
-    const blob = new Blob([result], { type: "text/plain;charset=utf-8" });
+    const fullText = (result.tables || '') + '\n\n' + (result.analysis || '');
+    const blob = new Blob([fullText], { type: "text/plain;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `实证分析结果_${new Date().toISOString().slice(0, 10)}.txt`;
@@ -372,7 +382,16 @@ export default function Home() {
                     正在运行实证分析，请稍候…
                   </div>
                 ) : (
-                  <div dangerouslySetInnerHTML={{ __html: renderMarkdown(result) }} />
+                  <>
+                    {result.tables && (
+                      <div dangerouslySetInnerHTML={{ __html: renderMarkdown(result.tables) }} />
+                    )}
+                    {result.analysis && (
+                      <div className="analysis-text">
+                        <div dangerouslySetInnerHTML={{ __html: renderMarkdown(result.analysis) }} />
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
               <div className="result-footer">
@@ -466,6 +485,8 @@ export default function Home() {
         .result-body .md-table td { border-bottom: 1px solid #ddd8cc; padding: 6px 12px; vertical-align: top; white-space: pre-line; }
         .result-body .md-table td:first-child { font-weight: 500; }
         .result-body .md-table tbody tr:last-child td { border-bottom: 1px solid #1a1a1a; }
+        .result-body .analysis-text { margin-top: 24px; padding-top: 20px; border-top: 1px dashed #ddd8cc; }
+        .result-body .analysis-text p { margin-bottom: 12px; line-height: 1.8; }
         .result-footer { padding: 12px 32px; border-top: 1px solid #ddd8cc; background: #f0ece3; display: flex; align-items: center; justify-content: space-between; }
         .result-note { font-size: 11px; color: #8a8078; font-style: italic; font-family: 'Playfair Display', serif; }
         .export-btn { background: none; border: 1px solid #ddd8cc; border-radius: 5px; padding: 5px 12px; font-size: 11px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; color: #8a8078; transition: all 0.15s; }
