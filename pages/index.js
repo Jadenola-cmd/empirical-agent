@@ -118,8 +118,8 @@ export default function Home() {
   function renderMarkdown(text) {
     let processed = text;
     
-    // 处理表格
-    processed = processed.replace(/^\|(.+)\|\n\|[-\| ]+\|\n((?:\|.+\|\n?)*)/gm, (match, header, body) => {
+    // 处理标准 Markdown 表格（有分隔行）
+    processed = processed.replace(/^\|(.+)\|\n\|[-\| :]+\|\n((?:\|.+\|\n?)*)/gm, (match, header, body) => {
       const headerCells = header.split('|').map(cell => cell.trim()).filter(cell => cell !== '');
       const bodyRows = body.trim().split('\n').map(row => 
         row.split('|').map(cell => cell.trim()).filter(cell => cell !== '')
@@ -137,6 +137,40 @@ export default function Home() {
       // 表体
       html += '<tbody>';
       bodyRows.forEach(row => {
+        html += '<tr>';
+        row.forEach(cell => {
+          html += `<td>${cell}</td>`;
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      
+      return html;
+    });
+    
+    // 处理无分隔行的表格（纯文本格式）
+    processed = processed.replace(/(\|[\s\S]+?\|)\n(?=\|)/gm, (match) => {
+      const lines = match.trim().split('\n');
+      if (lines.length < 2) return match;
+      
+      const rows = lines.map(line => 
+        line.split('|').map(cell => cell.trim()).filter(cell => cell !== '')
+      );
+      
+      if (rows[0].length === 0) return match;
+      
+      let html = '<table class="md-table">';
+      
+      // 表头
+      html += '<thead><tr>';
+      rows[0].forEach(cell => {
+        html += `<th>${cell}</th>`;
+      });
+      html += '</tr></thead>';
+      
+      // 表体
+      html += '<tbody>';
+      rows.slice(1).forEach(row => {
         html += '<tr>';
         row.forEach(cell => {
           html += `<td>${cell}</td>`;
@@ -413,10 +447,12 @@ export default function Home() {
         .result-body strong { color: #1a1a1a; font-weight: 600; }
         .result-body em { color: #8a2c2c; font-style: italic; }
         .result-body code { font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: #f0ece3; padding: 1px 5px; border-radius: 3px; color: #8a2c2c; }
-        .result-body .md-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; font-family: 'IBM Plex Mono', monospace; }
-        .result-body .md-table th, .result-body .md-table td { border: 1px solid #ddd8cc; padding: 8px 12px; text-align: center; }
-        .result-body .md-table th { background: #f0ece3; font-weight: 600; color: #1a1a1a; }
-        .result-body .md-table td { background: #fffef9; }
+        .result-body .md-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 12px; font-family: 'IBM Plex Mono', monospace; border-top: 2px solid #1a1a1a; border-bottom: 2px solid #1a1a1a; }
+        .result-body .md-table th { border-bottom: 1px solid #1a1a1a; padding: 8px 12px; text-align: center; background: #f7f5f0; font-weight: 600; color: #1a1a1a; }
+        .result-body .md-table td { border-bottom: 1px solid #ddd8cc; padding: 6px 12px; }
+        .result-body .md-table td:first-child { text-align: left; font-weight: 500; }
+        .result-body .md-table td:not(:first-child) { text-align: right; }
+        .result-body .md-table tbody tr:last-child td { border-bottom: 1px solid #1a1a1a; }
         .result-footer { padding: 12px 32px; border-top: 1px solid #ddd8cc; background: #f0ece3; display: flex; align-items: center; justify-content: space-between; }
         .result-note { font-size: 11px; color: #8a8078; font-style: italic; font-family: 'Playfair Display', serif; }
         .export-btn { background: none; border: 1px solid #ddd8cc; border-radius: 5px; padding: 5px 12px; font-size: 11px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; color: #8a8078; transition: all 0.15s; }
