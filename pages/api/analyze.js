@@ -40,7 +40,7 @@ ${customQ ? `\n用户附加要求：${customQ}` : ""}
         "Authorization": `Bearer ${process.env.DASHSCOPE_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "deepseek-v3",
+        model: "deepseek-v4-flash",
         max_tokens: 2000,
         messages: [
           { role: "system", content: systemPrompt },
