@@ -243,10 +243,10 @@ export default function Home() {
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}
             >
-              <input type="file" ref={fileRef} accept=".csv,.xlsx,.xls,.dta,.txt" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files[0])} />
+              <input type="file" ref={fileRef} accept=".csv,.xlsx,.xls,.txt" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files[0])} />
               <div className="upload-icon">📂</div>
               <h3>上传数据文件</h3>
-              <p>点击或拖拽上传 · 支持 .csv / .xlsx / .xls / .dta / .txt</p>
+              <p>点击或拖拽上传 · 支持 .csv / .xlsx / .xls / .txt</p>
             </div>
           ) : (
             <div className="data-meta">
