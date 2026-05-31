@@ -116,13 +116,57 @@ export default function Home() {
   }
 
   function renderMarkdown(text) {
-    return text
+    let processed = text;
+    
+    // 处理表格
+    processed = processed.replace(/^\|(.+)\|\n\|[-\| ]+\|\n((?:\|.+\|\n?)*)/gm, (match, header, body) => {
+      const headerCells = header.split('|').map(cell => cell.trim()).filter(cell => cell !== '');
+      const bodyRows = body.trim().split('\n').map(row => 
+        row.split('|').map(cell => cell.trim()).filter(cell => cell !== '')
+      );
+      
+      let html = '<table class="md-table">';
+      
+      // 表头
+      html += '<thead><tr>';
+      headerCells.forEach(cell => {
+        html += `<th>${cell}</th>`;
+      });
+      html += '</tr></thead>';
+      
+      // 表体
+      html += '<tbody>';
+      bodyRows.forEach(row => {
+        html += '<tr>';
+        row.forEach(cell => {
+          html += `<td>${cell}</td>`;
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      
+      return html;
+    });
+    
+    // 处理标题
+    processed = processed
       .replace(/^## (.+)$/gm, '<h2 class="md-h2">$1</h2>')
-      .replace(/^### (.+)$/gm, '<h3 class="md-h3">$1</h3>')
+      .replace(/^### (.+)$/gm, '<h3 class="md-h3">$1</h3>');
+    
+    // 处理粗体和斜体
+    processed = processed
       .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*(.+?)\*/g, "<em>$1</em>")
-      .replace(/`(.+?)`/g, "<code>$1</code>")
-      .replace(/\n\n/g, "<br/><br/>");
+      .replace(/\*(.+?)\*/g, "<em>$1");
+    
+    // 处理代码
+    processed = processed
+      .replace(/`(.+?)`/g, "<code>$1</code>");
+    
+    // 处理段落（但保留已处理的表格）
+    processed = processed
+      .replace(/\n\n(?![<table])/g, "<br/><br/>");
+    
+    return processed;
   }
 
   const analysisCards = [
@@ -369,6 +413,10 @@ export default function Home() {
         .result-body strong { color: #1a1a1a; font-weight: 600; }
         .result-body em { color: #8a2c2c; font-style: italic; }
         .result-body code { font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: #f0ece3; padding: 1px 5px; border-radius: 3px; color: #8a2c2c; }
+        .result-body .md-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; font-family: 'IBM Plex Mono', monospace; }
+        .result-body .md-table th, .result-body .md-table td { border: 1px solid #ddd8cc; padding: 8px 12px; text-align: center; }
+        .result-body .md-table th { background: #f0ece3; font-weight: 600; color: #1a1a1a; }
+        .result-body .md-table td { background: #fffef9; }
         .result-footer { padding: 12px 32px; border-top: 1px solid #ddd8cc; background: #f0ece3; display: flex; align-items: center; justify-content: space-between; }
         .result-note { font-size: 11px; color: #8a8078; font-style: italic; font-family: 'Playfair Display', serif; }
         .export-btn { background: none; border: 1px solid #ddd8cc; border-radius: 5px; padding: 5px 12px; font-size: 11px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; color: #8a8078; transition: all 0.15s; }
