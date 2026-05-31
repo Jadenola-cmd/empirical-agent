@@ -74,7 +74,8 @@ export default function Home() {
 
     const { data, meta } = parsedData;
     const cols = selectedCols.length > 0 ? selectedCols : meta.fields;
-    const sampleSize = Math.min(50, data.length);
+    // 限制在最多1000行数据，避免超出API限制
+    const sampleSize = Math.min(1000, data.length);
     const sample = data.slice(0, sampleSize);
     const csvStr = [cols.join(","), ...sample.map((r) => cols.map((c) => r[c] ?? "").join(","))].join("\n");
 
@@ -121,62 +122,51 @@ export default function Home() {
   function renderMarkdown(text) {
     let processed = text;
     
+    // 处理换行符 <br> 为 <br/>
+    processed = processed.replace(/<br>/g, '<br/>').replace(/<br\\s*\\/>/g, '<br/>');
+    
     // 处理标准 Markdown 表格（有分隔行）
-    processed = processed.replace(/^\|(.+)\|\n\|[-\| :]+\|\n((?:\|.+\|\n?)*)/gm, (match, header, body) => {
+    // 更健壮的表格正则表达式
+    const tableRegex = /^\|(.+?)\|\n\|([-\| :]+)\|\n((?:\|.*?\|\n?)*)/gm;
+    processed = processed.replace(tableRegex, (match, header, separator, body) => {
       const headerCells = header.split("|").map(cell => cell.trim()).filter(cell => cell !== "");
-      const bodyRows = body.trim().split("\n").map(line => 
-        line.split("|").map(cell => cell.trim()).filter(cell => cell !== "")
+      const bodyLines = body.trim().split("\n").filter(line => line.trim());
+      const bodyRows = bodyLines.map(line => 
+        line.split("|").map(cell => cell.trim())
       );
+      
+      // 计算列数
+      const colCount = headerCells.length;
       
       let html = '<table class="md-table">';
       
       // 表头
       html += '<thead><tr>';
-      headerCells.forEach(cell => {
-        html += `<th>${cell}</th>`;
+      headerCells.forEach((cell, idx) => {
+        const align = idx === 0 ? 'left' : 'center';
+        html += `<th style="text-align: ${align}">${cell}</th>`;
       });
       html += '</tr></thead>';
       
       // 表体
       html += '<tbody>';
       bodyRows.forEach(row => {
+        // 确保每一行有足够的列
+        const paddedRow = [...row];
+        while (paddedRow.length < colCount + 2) {
+          paddedRow.push("");
+        }
+        // 跳过开头和结尾的空字符串
+        const cells = paddedRow.filter((cell, idx) => idx > 0 && idx < colCount + 1);
+        
         html += '<tr>';
-        row.forEach(cell => {
-          html += `<td>${cell}</td>`;
-        });
-        html += '</tr>';
-      });
-      html += '</tbody></table>';
-      
-      return html;
-    });
-    
-    // 处理无分隔行的表格（纯文本格式）
-    processed = processed.replace(/(\|[\s\S]+?\|)\n(?=\|)/gm, (match) => {
-      const lines = match.trim().split("\n");
-      if (lines.length < 2) return match;
-      
-      const rows = lines.map(line => 
-        line.split("|").map(cell => cell.trim()).filter(cell => cell !== "")
-      );
-      
-      if (rows[0].length === 0) return match;
-      
-      let html = '<table class="md-table">';
-      
-      // 表头
-      html += '<thead><tr>';
-      rows[0].forEach(cell => {
-        html += `<th>${cell}</th>`;
-      });
-      html += '</tr></thead>';
-      
-      // 表体
-      html += '<tbody>';
-      rows.slice(1).forEach(row => {
-        html += '<tr>';
-        row.forEach(cell => {
-          html += `<td>${cell}</td>`;
+        cells.forEach((cell, idx) => {
+          const align = idx === 0 ? 'left' : 'right';
+          let cellContent = cell.trim();
+          if (cellContent) {
+            cellContent = cellContent.replace(/\*\*\*/g, '***').replace(/\*\*/g, '**').replace(/\*/g, '*');
+          }
+          html += `<td style="text-align: ${align}">${cellContent}</td>`;
         });
         html += '</tr>';
       });
@@ -190,7 +180,7 @@ export default function Home() {
       .replace(/^## (.+)$/gm, '<h2 class="md-h2">$1</h2>')
       .replace(/^### (.+)$/gm, '<h3 class="md-h3">$1</h3>');
     
-    // 处理粗体和斜体
+    // 处理粗体和斜体（但不要在表格内部处理）
     processed = processed
       .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
       .replace(/\*(.+?)\*/g, "<em>$1</em>");
@@ -453,10 +443,9 @@ export default function Home() {
         .result-body em { color: #8a2c2c; font-style: italic; }
         .result-body code { font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: #f0ece3; padding: 1px 5px; border-radius: 3px; color: #8a2c2c; }
         .result-body .md-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 12px; font-family: 'IBM Plex Mono', monospace; border-top: 2px solid #1a1a1a; border-bottom: 2px solid #1a1a1a; }
-        .result-body .md-table th { border-bottom: 1px solid #1a1a1a; padding: 8px 12px; text-align: center; background: #f7f5f0; font-weight: 600; color: #1a1a1a; }
-        .result-body .md-table td { border-bottom: 1px solid #ddd8cc; padding: 6px 12px; }
-        .result-body .md-table td:first-child { text-align: left; font-weight: 500; }
-        .result-body .md-table td:not(:first-child) { text-align: right; }
+        .result-body .md-table th { border-bottom: 1px solid #1a1a1a; padding: 8px 12px; background: #f7f5f0; font-weight: 600; color: #1a1a1a; }
+        .result-body .md-table td { border-bottom: 1px solid #ddd8cc; padding: 6px 12px; vertical-align: top; white-space: pre-line; }
+        .result-body .md-table td:first-child { font-weight: 500; }
         .result-body .md-table tbody tr:last-child td { border-bottom: 1px solid #1a1a1a; }
         .result-footer { padding: 12px 32px; border-top: 1px solid #ddd8cc; background: #f0ece3; display: flex; align-items: center; justify-content: space-between; }
         .result-note { font-size: 11px; color: #8a8078; font-style: italic; font-family: 'Playfair Display', serif; }
