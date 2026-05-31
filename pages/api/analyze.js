@@ -1,5 +1,3 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
@@ -35,10 +33,24 @@ ${customQ ? `\n用户附加要求：${customQ}` : ""}
 请进行${analysisLabels[analysisType]}，给出可直接用于学术论文的规范结果。`;
 
   try {
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-    const result = await model.generateContent(systemPrompt + "\n\n" + userPrompt);
-    const text = result.response.text();
+    const response = await fetch("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.DASHSCOPE_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "deepseek-v3",
+        max_tokens: 2000,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+      }),
+    });
+
+    const data = await response.json();
+    const text = data.choices?.[0]?.message?.content || "分析失败";
     res.status(200).json({ text });
   } catch (err) {
     res.status(500).json({ error: err.message });
