@@ -1,5 +1,6 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import Head from "next/head";
+import { initDuckDB, parseDtaFile } from "../lib/duckdb";
 
 export default function Home() {
   const [parsedData, setParsedData] = useState(null);
@@ -12,7 +13,25 @@ export default function Home() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [fileName, setFileName] = useState("");
+  const [duckdbReady, setDuckdbReady] = useState(false);
+  const [duckdbError, setDuckdbError] = useState(null);
   const fileRef = useRef();
+  
+  // Initialize DuckDB on component mount
+  useEffect(() => {
+    let mounted = true;
+    initDuckDB()
+      .then(() => {
+        if (mounted) setDuckdbReady(true);
+      })
+      .catch((err) => {
+        if (mounted) {
+          console.error('DuckDB init failed:', err);
+          setDuckdbError('Failed to initialize Stata file support. Please convert dta files may not work.');
+        }
+      });
+    return () => { mounted = false; };
+  }, []);
 
   function parseCSV(text) {
     const lines = text.trim().split("\n");
@@ -30,8 +49,8 @@ export default function Home() {
     if (!file) return;
     setFileName(file.name);
     const ext = file.name.split(".").pop().toLowerCase();
-    const reader = new FileReader();
     if (ext === "xlsx" || ext === "xls") {
+      const reader = new FileReader();
       reader.onload = (e) => {
         import("xlsx").then((XLSX) => {
           const wb = XLSX.read(e.target.result, { type: "binary" });
@@ -43,7 +62,27 @@ export default function Home() {
         });
       };
       reader.readAsBinaryString(file);
+    } else if (ext === "dta") {
+      // Handle Stata dta files using DuckDB
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          if (!duckdbReady) {
+            alert("Stata file parser is still loading. Please try again in a moment or convert your dta file to CSV/Excel first.");
+            return;
+          }
+          
+          const result = await parseDtaFile(e.target.result, file.name);
+          setParsedData(result);
+          setSelectedCols([]);
+        } catch (err) {
+          console.error("Error parsing dta file:", err);
+          alert("Error parsing dta file. Please convert it to CSV or Excel first.");
+        }
+      };
+      reader.readAsArrayBuffer(file);
     } else {
+      const reader = new FileReader();
       reader.onload = (e) => {
         const parsed = parseCSV(e.target.result);
         setParsedData(parsed);
@@ -120,9 +159,9 @@ export default function Home() {
     
     // 处理标准 Markdown 表格（有分隔行）
     processed = processed.replace(/^\|(.+)\|\n\|[-\| :]+\|\n((?:\|.+\|\n?)*)/gm, (match, header, body) => {
-      const headerCells = header.split('|').map(cell => cell.trim()).filter(cell => cell !== '');
-      const bodyRows = body.trim().split('\n').map(row => 
-        row.split('|').map(cell => cell.trim()).filter(cell => cell !== '')
+      const headerCells = header.split("|").map(cell => cell.trim()).filter(cell => cell !== "");
+      const bodyRows = body.trim().split("\n").map(line => 
+        line.split("|").map(cell => cell.trim()).filter(cell => cell !== "")
       );
       
       let html = '<table class="md-table">';
@@ -150,11 +189,11 @@ export default function Home() {
     
     // 处理无分隔行的表格（纯文本格式）
     processed = processed.replace(/(\|[\s\S]+?\|)\n(?=\|)/gm, (match) => {
-      const lines = match.trim().split('\n');
+      const lines = match.trim().split("\n");
       if (lines.length < 2) return match;
       
       const rows = lines.map(line => 
-        line.split('|').map(cell => cell.trim()).filter(cell => cell !== '')
+        line.split("|").map(cell => cell.trim()).filter(cell => cell !== "")
       );
       
       if (rows[0].length === 0) return match;
@@ -190,7 +229,7 @@ export default function Home() {
     // 处理粗体和斜体
     processed = processed
       .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*(.+?)\*/g, "<em>$1");
+      .replace(/\*(.+?)\*/g, "<em>$1</em>");
     
     // 处理代码
     processed = processed
@@ -243,10 +282,10 @@ export default function Home() {
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}
             >
-              <input type="file" ref={fileRef} accept=".csv,.xlsx,.xls,.txt" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files[0])} />
+              <input type="file" ref={fileRef} accept=".csv,.xlsx,.xls,.txt,.dta" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files[0])} />
               <div className="upload-icon">📂</div>
               <h3>上传数据文件</h3>
-              <p>点击或拖拽上传 · 支持 .csv / .xlsx / .xls / .txt</p>
+              <p>点击或拖拽上传 · 支持 .csv / .xlsx / .xls / .txt / .dta</p>
             </div>
           ) : (
             <div className="data-meta">
