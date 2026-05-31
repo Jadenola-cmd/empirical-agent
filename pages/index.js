@@ -1,10 +1,10 @@
 import { useState, useRef } from 'react';
 import Head from 'next/head';
-import { processAnalysisText } from '../lib/parser';
 import { descriptiveStats, generateDescriptiveTable, correlationMatrix, generateCorrelationTable } from '../lib/statistics';
 import { parseCSV, stringifyCSV, detectVariableTypes } from '../lib/data-utils';
 import { mergeDataHorizontal, mergeDataVertical } from '../lib/data-merger';
 import { detectMissingValues, dropMissingValues, imputeMissingValues, winsorize, detectOutliers } from '../lib/data-cleansing';
+import { olsRegression, generateRegressionTable } from '../lib/regression';
 
 const AppStep = {
   UPLOAD: 'upload',
@@ -137,17 +137,8 @@ export default function Home() {
     setAnalysisResult(null);
 
     const { data, meta } = mergedData;
-    const cols = selectedCols.length > 0 ? selectedCols : meta.fields;
-    const sampleSize = Math.min(1000, data.length);
-    const sample = data.slice(0, sampleSize);
-    const csvStr = [cols.join(','), ...sample.map(r => cols.map(c => r[c] ?? '').join(','))].join('\n');
-
-    let varSpec = '';
-    if (analysisType === 'regression' && depVar) {
-      varSpec = `\n被解释变量(Y): ${depVar}\n解释变量(X): ${indepVars.join(', ') || '未指定'}\n`;
-    }
     
-    const isLocalAnalysis = analysisType === 'descriptive' || analysisType === 'correlation';
+    const isLocalAnalysis = analysisType === 'descriptive' || analysisType === 'correlation' || analysisType === 'regression';
     
     if (isLocalAnalysis) {
       if (analysisType === 'descriptive') {
@@ -164,10 +155,74 @@ export default function Home() {
           tables: '\n\n## 相关性分析\n' + tableStr,
           analysis: '以上是变量间的相关性分析结果。'
         });
+      } else if (analysisType === 'regression') {
+        if (!depVar) {
+          alert('请先选择被解释变量(Y)');
+          setLoading(false);
+          return;
+        }
+        
+        const analysisVars = indepVars.length > 0 ? indepVars : meta.fields.filter(f => f !== depVar);
+        
+        const yData = data.map(row => parseFloat(row[depVar]) || 0);
+        const XData = data.map(row => [
+          1,
+          ...analysisVars.map(v => parseFloat(row[v]) || 0)
+        ]);
+        
+        try {
+          const regressionResult = olsRegression(yData, XData);
+          regressionResult.varNames = analysisVars;
+          
+          const tableStr = generateRegressionTable(regressionResult, analysisVars, depVar);
+          
+          let analysis = `\n\n## OLS 回归分析结果\n`;
+          analysis += `\n因变量: **${depVar}**\n`;
+          analysis += `\n样本量: ${regressionResult.n}\n`;
+          analysis += `R²: ${regressionResult.rSquared.toFixed(4)}\n`;
+          analysis += `调整 R²: ${regressionResult.adjRSquared.toFixed(4)}\n`;
+          analysis += `F统计量: ${regressionResult.fStatistic.toFixed(4)}\n\n`;
+          
+          analysis += `### 主要发现：\n`;
+          
+          analysisVars.forEach((v, i) => {
+            const coef = regressionResult.coefficients[i + 1];
+            const pval = regressionResult.pValues[i + 1];
+            const sig = pval < 0.01 ? '***' : pval < 0.05 ? '**' : pval < 0.1 ? '*' : '';
+            
+            if (sig) {
+              const direction = coef > 0 ? '正向' : '负向';
+              analysis += `- **${v}** 对 ${depVar} 有显著${direction}影响 (系数=${coef.toFixed(4)}${sig}, p=${pval.toFixed(4)})\n`;
+            } else {
+              analysis += `- **${v}** 对 ${depVar} 的影响不显著 (系数=${coef.toFixed(4)}, p=${pval.toFixed(4)})\n`;
+            }
+          });
+          
+          setAnalysisResult({
+            tables: tableStr,
+            analysis: analysis
+          });
+        } catch (error) {
+          setAnalysisResult({
+            tables: '',
+            analysis: '回归分析失败：' + error.message
+          });
+        }
       }
+      
       setLoading(false);
       setCurrentStep(AppStep.RESULTS);
       return;
+    }
+
+    const cols = selectedCols.length > 0 ? selectedCols : meta.fields;
+    const sampleSize = Math.min(1000, data.length);
+    const sample = data.slice(0, sampleSize);
+    const csvStr = [cols.join(','), ...sample.map(r => cols.map(c => r[c] ?? '').join(','))].join('\n');
+
+    let varSpec = '';
+    if (analysisType === 'regression' && depVar) {
+      varSpec = `\n被解释变量(Y): ${depVar}\n解释变量(X): ${indepVars.join(', ') || '未指定'}\n`;
     }
 
     fetch('/api/analyze', {
@@ -185,7 +240,12 @@ export default function Home() {
     }).then(async (res) => {
       const json = await res.json();
       const rawText = json.text || json.error || '分析失败';
-      const processed = processAnalysisText(rawText, analysisType);
+      
+      const processed = {
+        tables: rawText,
+        analysis: customQ || '分析结果如上所示'
+      };
+      
       setAnalysisResult(processed);
       setLoading(false);
       setCurrentStep(AppStep.RESULTS);

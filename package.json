@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.15.0",
+    "jstat": "^1.9.6",
     "next": "14.2.5",
     "react": "^18",
     "react-dom": "^18",
