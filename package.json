@@ -7,8 +7,6 @@
     "start": "next start"
   },
   "dependencies": {
-    "@duckdb/duckdb-wasm": "^1.33.1-dev45.0",
-    "@duckdb/duckdb-wasm-shell": "^1.33.1-dev45.0",
     "@google/generative-ai": "^0.15.0",
     "next": "14.2.5",
     "react": "^18",

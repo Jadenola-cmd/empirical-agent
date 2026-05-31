@@ -122,78 +122,97 @@ export default function Home() {
   function renderMarkdown(text) {
     let processed = text;
     
-    // 处理换行符 <br> 为 <br/>
-    processed = processed.replace(/<br>/g, '<br/>').replace(/<br\\s*\\/>/g, '<br/>');
+    // 先处理换行符
+    processed = processed.replace(/<br>/g, '<br/>');
     
-    // 处理标准 Markdown 表格（有分隔行）
-    // 更健壮的表格正则表达式
-    const tableRegex = /^\|(.+?)\|\n\|([-\| :]+)\|\n((?:\|.*?\|\n?)*)/gm;
-    processed = processed.replace(tableRegex, (match, header, separator, body) => {
-      const headerCells = header.split("|").map(cell => cell.trim()).filter(cell => cell !== "");
-      const bodyLines = body.trim().split("\n").filter(line => line.trim());
-      const bodyRows = bodyLines.map(line => 
-        line.split("|").map(cell => cell.trim())
-      );
+    // 简单的表格检测和处理
+    const lines = processed.split('\n');
+    let result = [];
+    let inTable = false;
+    let tableLines = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       
-      // 计算列数
-      const colCount = headerCells.length;
-      
-      let html = '<table class="md-table">';
-      
-      // 表头
-      html += '<thead><tr>';
-      headerCells.forEach((cell, idx) => {
-        const align = idx === 0 ? 'left' : 'center';
-        html += `<th style="text-align: ${align}">${cell}</th>`;
-      });
-      html += '</tr></thead>';
-      
-      // 表体
-      html += '<tbody>';
-      bodyRows.forEach(row => {
-        // 确保每一行有足够的列
-        const paddedRow = [...row];
-        while (paddedRow.length < colCount + 2) {
-          paddedRow.push("");
-        }
-        // 跳过开头和结尾的空字符串
-        const cells = paddedRow.filter((cell, idx) => idx > 0 && idx < colCount + 1);
-        
-        html += '<tr>';
-        cells.forEach((cell, idx) => {
-          const align = idx === 0 ? 'left' : 'right';
-          let cellContent = cell.trim();
-          if (cellContent) {
-            cellContent = cellContent.replace(/\*\*\*/g, '***').replace(/\*\*/g, '**').replace(/\*/g, '*');
-          }
-          html += `<td style="text-align: ${align}">${cellContent}</td>`;
-        });
-        html += '</tr>';
-      });
-      html += '</tbody></table>';
-      
-      return html;
-    });
+      // 检测表格行
+      if (line.trim().startsWith('|')) {
+        inTable = true;
+        tableLines.push(line);
+      } else if (inTable) {
+        // 表格结束，渲染表格
+        result.push(renderTable(tableLines));
+        tableLines = [];
+        inTable = false;
+        result.push(line);
+      } else {
+        result.push(line);
+      }
+    }
+    
+    // 如果最后还有表格内容
+    if (inTable && tableLines.length > 0) {
+      result.push(renderTable(tableLines));
+    }
+    
+    processed = result.join('\n');
     
     // 处理标题
     processed = processed
       .replace(/^## (.+)$/gm, '<h2 class="md-h2">$1</h2>')
       .replace(/^### (.+)$/gm, '<h3 class="md-h3">$1</h3>');
     
-    // 处理粗体和斜体（但不要在表格内部处理）
+    // 处理粗体和斜体
     processed = processed
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*(.+?)\*/g, "<em>$1</em>");
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>');
     
     // 处理代码
     processed = processed
-      .replace(/`(.+?)`/g, "<code>$1</code>");
+      .replace(/`(.+?)`/g, '<code>$1</code>');
     
-    // 处理段落（但保留已处理的表格）
+    // 处理段落
     processed = processed
-      .replace(/\n\n(?![<table])/g, "<br/><br/>");
+      .replace(/\n\n/g, '<br/><br/>');
     
     return processed;
+  }
+  
+  function renderTable(lines) {
+    if (lines.length < 2) return lines.join('\n');
+    
+    // 分析表格结构
+    const headerCells = lines[0].split('|').map(c => c.trim()).filter(c => c !== '');
+    const bodyLines = lines.slice(1).filter(line => !line.match(/^\|[-| :]+\|$/));
+    const colCount = headerCells.length;
+    
+    let html = '<table class="md-table">';
+    
+    // 表头
+    html += '<thead><tr>';
+    headerCells.forEach((cell, idx) => {
+      const align = idx === 0 ? 'left' : 'center';
+      html += `<th style="text-align: ${align}">${cell}</th>`;
+    });
+    html += '</tr></thead>';
+    
+    // 表体
+    html += '<tbody>';
+    bodyLines.forEach(line => {
+      const cells = line.split('|').map(c => c.trim()).filter(c => c !== '');
+      html += '<tr>';
+      cells.forEach((cell, idx) => {
+        const align = idx === 0 ? 'left' : 'right';
+        html += `<td style="text-align: ${align}">${cell}</td>`;
+      });
+      // 填充缺失的单元格
+      for (let i = cells.length; i < colCount; i++) {
+        html += '<td></td>';
+      }
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    
+    return html;
   }
 
   const analysisCards = [
