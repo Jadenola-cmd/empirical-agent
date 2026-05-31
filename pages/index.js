@@ -14,7 +14,6 @@ export default function Home() {
   const [fileName, setFileName] = useState("");
   const fileRef = useRef();
 
-  // Parse CSV
   function parseCSV(text) {
     const lines = text.trim().split("\n");
     const headers = lines[0].split(",").map((h) => h.trim().replace(/"/g, ""));
@@ -30,13 +29,28 @@ export default function Home() {
   function handleFile(file) {
     if (!file) return;
     setFileName(file.name);
+    const ext = file.name.split(".").pop().toLowerCase();
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const parsed = parseCSV(e.target.result);
-      setParsedData(parsed);
-      setSelectedCols([]);
-    };
-    reader.readAsText(file);
+    if (ext === "xlsx" || ext === "xls") {
+      reader.onload = (e) => {
+        import("xlsx").then((XLSX) => {
+          const wb = XLSX.read(e.target.result, { type: "binary" });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+          const fields = Object.keys(json[0] || {});
+          setParsedData({ data: json, meta: { fields } });
+          setSelectedCols([]);
+        });
+      };
+      reader.readAsBinaryString(file);
+    } else {
+      reader.onload = (e) => {
+        const parsed = parseCSV(e.target.result);
+        setParsedData(parsed);
+        setSelectedCols([]);
+      };
+      reader.readAsText(file);
+    }
   }
 
   function toggleCol(col) {
@@ -129,7 +143,6 @@ export default function Home() {
       </Head>
 
       <div className="app">
-        {/* Header */}
         <div className="journal-header">
           <span className="journal-name">Empirical Research Assistant</span>
           <span className="journal-meta">论文实证分析 · Powered by Gemini</span>
@@ -140,7 +153,6 @@ export default function Home() {
           <p className="subtitle">支持 OLS 回归 · 描述统计 · 相关性 · 时间序列 · 机器学习预测</p>
         </div>
 
-        {/* Step 1 */}
         <div className="section">
           <div className="section-head">
             <span className="section-num">STEP 01</span>
@@ -153,10 +165,10 @@ export default function Home() {
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}
             >
-              <input type="file" ref={fileRef} accept=".csv" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files[0])} />
+              <input type="file" ref={fileRef} accept=".csv,.xlsx,.xls" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files[0])} />
               <div className="upload-icon">📂</div>
-              <h3>上传 CSV 文件</h3>
-              <p>点击或拖拽上传 · 自动识别变量</p>
+              <h3>上传 CSV 或 Excel 文件</h3>
+              <p>点击或拖拽上传 · 支持 .csv / .xlsx / .xls</p>
             </div>
           ) : (
             <div className="data-meta">
@@ -178,7 +190,6 @@ export default function Home() {
 
         <hr className="divider" />
 
-        {/* Step 2 */}
         <div className="section">
           <div className="section-head">
             <span className="section-num">STEP 02</span>
@@ -195,7 +206,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Variable config for regression */}
         {analysisType === "regression" && fields.length > 0 && (
           <div className="var-config">
             <div className="var-config-title">VARIABLE SPECIFICATION</div>
@@ -224,7 +234,6 @@ export default function Home() {
 
         <hr className="divider" />
 
-        {/* Step 3 */}
         <div className="section">
           <div className="section-head">
             <span className="section-num">STEP 03</span>
@@ -251,7 +260,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Result */}
         {(loading || result) && (
           <div className="result-area">
             <div className="section-head">
