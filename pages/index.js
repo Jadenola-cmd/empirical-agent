@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import Head from 'next/head';
-import { descriptiveStats, generateDescriptiveTable, correlationMatrix, generateCorrelationTable } from '../lib/statistics';
+import { descriptiveStats, generateDescriptiveTable, correlationMatrix, generateCorrelationTable, diagnoseSingularMatrix } from '../lib/statistics';
 import { parseCSV, stringifyCSV, detectVariableTypes } from '../lib/data-utils';
 import { mergeDataHorizontal, mergeDataVertical } from '../lib/data-merger';
 import { detectMissingValues, dropMissingValues, imputeMissingValues, winsorize, detectOutliers } from '../lib/data-cleansing';
@@ -203,9 +203,69 @@ export default function Home() {
             analysis: analysis
           });
         } catch (error) {
+          // 尝试诊断问题
+          let diagnosisInfo = '';
+          try {
+            const diagnosis = diagnoseSingularMatrix(data, depVar, analysisVars);
+            
+            diagnosisInfo = `\n\n## 问题诊断报告\n\n`;
+            diagnosisInfo += `### 1. 回归使用的变量\n`;
+            diagnosisInfo += `- 因变量(Y): ${depVar}\n`;
+            diagnosisInfo += `- 自变量(X): ${analysisVars.join(', ')}\n\n`;
+            
+            diagnosisInfo += `### 2. 每个变量的样本数\n`;
+            Object.keys(diagnosis.sampleStats).forEach(varName => {
+              const stats = diagnosis.sampleStats[varName];
+              diagnosisInfo += `- ${varName}: ${stats.n}个有效样本\n`;
+            });
+            diagnosisInfo += '\n';
+            
+            diagnosisInfo += `### 3. 是否存在常数列\n`;
+            if (diagnosis.constantColumns.length > 0) {
+              diagnosisInfo += `- **是**: ${diagnosis.constantColumns.join(', ')}\n\n`;
+            } else {
+              diagnosisInfo += `- 否\n\n`;
+            }
+            
+            diagnosisInfo += `### 4. 是否存在完全重复变量\n`;
+            if (diagnosis.duplicateVariables.length > 0) {
+              diagnosis.duplicateVariables.forEach(pair => {
+                diagnosisInfo += `- **是**: ${pair[0]} 和 ${pair[1]}\n`;
+              });
+              diagnosisInfo += '\n';
+            } else {
+              diagnosisInfo += `- 否\n\n`;
+            }
+            
+            diagnosisInfo += `### 5. 是否存在高度共线性（相关系数>0.95）\n`;
+            if (diagnosis.highCorrelations.length > 0) {
+              diagnosis.highCorrelations.forEach(corr => {
+                diagnosisInfo += `- **是**: ${corr.var1} 和 ${corr.var2} (相关系数=${corr.correlation})\n`;
+              });
+              diagnosisInfo += '\n';
+            } else {
+              diagnosisInfo += `- 否\n\n`;
+            }
+            
+            diagnosisInfo += `### 6. X矩阵维度\n`;
+            diagnosisInfo += `- 行数(样本数N): ${diagnosis.xMatrixDimensions.rows}\n`;
+            diagnosisInfo += `- 列数(变量数K): ${diagnosis.xMatrixDimensions.columns}\n\n`;
+            
+            diagnosisInfo += `### 7. 样本数N: ${diagnosis.sampleN}\n\n`;
+            diagnosisInfo += `### 8. 自变量个数K: ${diagnosis.kVariables - 1} (不含截距项)\n\n`;
+            
+            diagnosisInfo += `### 9. 可能的问题原因\n`;
+            diagnosisInfo += `- **${diagnosis.probableCause}**\n\n`;
+            
+            diagnosisInfo += `### 10. 建议\n`;
+            diagnosisInfo += `- ${diagnosis.suggestion}\n`;
+          } catch (diagError) {
+            diagnosisInfo = `\n诊断分析失败: ${diagError.message}\n`;
+          }
+          
           setAnalysisResult({
             tables: '',
-            analysis: '回归分析失败：' + error.message
+            analysis: '回归分析失败：' + error.message + '\n' + diagnosisInfo
           });
         }
       }
