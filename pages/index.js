@@ -1,6 +1,5 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import Head from "next/head";
-import { initDuckDB, parseDtaFile } from "../lib/duckdb";
 
 export default function Home() {
   const [parsedData, setParsedData] = useState(null);
@@ -13,25 +12,7 @@ export default function Home() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [fileName, setFileName] = useState("");
-  const [duckdbReady, setDuckdbReady] = useState(false);
-  const [duckdbError, setDuckdbError] = useState(null);
   const fileRef = useRef();
-  
-  // Initialize DuckDB on component mount
-  useEffect(() => {
-    let mounted = true;
-    initDuckDB()
-      .then(() => {
-        if (mounted) setDuckdbReady(true);
-      })
-      .catch((err) => {
-        if (mounted) {
-          console.error('DuckDB init failed:', err);
-          setDuckdbError('Failed to initialize Stata file support. Please convert dta files may not work.');
-        }
-      });
-    return () => { mounted = false; };
-  }, []);
 
   function parseCSV(text) {
     const lines = text.trim().split("\n");
@@ -63,24 +44,7 @@ export default function Home() {
       };
       reader.readAsBinaryString(file);
     } else if (ext === "dta") {
-      // Handle Stata dta files using DuckDB
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        try {
-          if (!duckdbReady) {
-            alert("Stata file parser is still loading. Please try again in a moment or convert your dta file to CSV/Excel first.");
-            return;
-          }
-          
-          const result = await parseDtaFile(e.target.result, file.name);
-          setParsedData(result);
-          setSelectedCols([]);
-        } catch (err) {
-          console.error("Error parsing dta file:", err);
-          alert("Error parsing dta file. Please convert it to CSV or Excel first.");
-        }
-      };
-      reader.readAsArrayBuffer(file);
+      alert("Stata .dta 文件支持需要在服务器端运行。请先将 .dta 文件转换为 CSV 或 Excel 格式，然后再上传分析。\n\n转换方法（Stata中）：\nexport delimited using \"filename.csv\", replace");
     } else {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -285,7 +249,8 @@ export default function Home() {
               <input type="file" ref={fileRef} accept=".csv,.xlsx,.xls,.txt,.dta" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files[0])} />
               <div className="upload-icon">📂</div>
               <h3>上传数据文件</h3>
-              <p>点击或拖拽上传 · 支持 .csv / .xlsx / .xls / .txt / .dta</p>
+              <p>点击或拖拽上传 · 支持 .csv / .xlsx / .xls / .txt</p>
+              <p className="dta-note">注：.dta 文件请先转换为 CSV 格式</p>
             </div>
           ) : (
             <div className="data-meta">
@@ -430,6 +395,7 @@ export default function Home() {
         .upload-icon { font-size: 28px; margin-bottom: 10px; }
         .upload-zone h3 { font-family: 'Playfair Display', serif; font-size: 15px; margin-bottom: 4px; }
         .upload-zone p { font-size: 12px; color: #8a8078; font-family: 'IBM Plex Mono', monospace; }
+        .dta-note { font-size: 11px; color: #8a2c2c; font-style: italic; margin-top: 8px; }
         .data-meta { background: #fffef9; border: 1px solid #ddd8cc; border-radius: 8px; padding: 16px 20px; }
         .meta-row { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
         .meta-item { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8a8078; }
