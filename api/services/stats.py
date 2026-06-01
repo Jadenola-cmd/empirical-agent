@@ -82,9 +82,13 @@ def run_ols(
     if cluster_var:
         cols_needed.append(cluster_var)
 
-    sub = df[cols_needed].dropna()
+    sub = df[cols_needed].dropna().copy()
+    # 强制转换为数值，非数值变 NaN 后再删除
+    for col in cols_needed:
+        sub[col] = pd.to_numeric(sub[col], errors="coerce")
+    sub = sub.dropna()
     y = sub[dep_var]
-    X = sm.add_constant(sub[all_x_vars], has_constant="add")  # 与 Stata 一致，始终加截距
+    X = sm.add_constant(sub[all_x_vars], has_constant="add")
 
     model = sm.OLS(y, X)
 
@@ -153,6 +157,9 @@ def run_panel(
         cols_needed.append(cluster_var)
 
     sub = df[cols_needed].dropna().copy()
+    for col in cols_needed:
+        sub[col] = pd.to_numeric(sub[col], errors="coerce")
+    sub = sub.dropna()
 
     # 设置面板索引（entity + time）
     sub = sub.set_index([entity_var, time_var])
