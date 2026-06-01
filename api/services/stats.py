@@ -165,7 +165,26 @@ def run_panel(
     sub = sub.set_index([entity_var, time_var])
 
     y = sub[dep_var]
-    X = sm.add_constant(sub[all_x_vars], has_constant="add")
+    X_raw = sub[all_x_vars]
+
+    # 自动移除完全共线的列
+    from numpy.linalg import matrix_rank
+    import numpy as np
+    X_arr = X_raw.values.astype(float)
+    rank = matrix_rank(X_arr)
+    if rank < X_raw.shape[1]:
+        # 逐列检测，移除导致共线的列
+        keep = []
+        dropped = []
+        for i, col in enumerate(X_raw.columns):
+            test = X_raw[keep + [col]].values.astype(float)
+            if matrix_rank(test) > len(keep):
+                keep.append(col)
+            else:
+                dropped.append(col)
+        X_raw = X_raw[keep]
+
+    X = sm.add_constant(X_raw, has_constant="add")
 
     # 协方差类型
     if cluster_var:
@@ -186,7 +205,7 @@ def run_panel(
         model = RandomEffects(y, X)
         stata_cmd = f"xtreg {dep_var} {' '.join(all_x_vars)}, re"
 
-    res = model.fit(cov_type=cov_type, **cov_kwds)
+    res = model.fit(cov_type=cov_type, check_rank=False, **cov_kwds)
 
     # Hausman 检验（FE vs RE，仅在 FE 时顺带运行）
     hausman = None
@@ -245,5 +264,7 @@ def run_panel(
         "coefficients":  coefs,
         "hausman":       hausman,
         "stata_equivalent": stata_cmd,
-        "notes":         f"括号内为t值，{cov_type}标准误，***p<0.01, **p<0.05, *p<0.1",
+        "dropped_vars": dropped,  # 新增
+        "notes": f"括号内为t值，{cov_type}标准误，***p<0.01, **p<0.05, *p<0.1" + 
+                 (f"。注：{dropped} 因完全共线性被自动移除，与 Stata 处理一致" if dropped else ""),
     }
