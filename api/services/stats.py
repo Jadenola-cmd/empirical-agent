@@ -79,6 +79,10 @@ def run_ols(
         cols_needed.append(cluster_var)
 
     sub = df[cols_needed].dropna().copy()
+<<<<<<< HEAD
+=======
+    # 强制转换为数值，非数值变 NaN 后再删除
+>>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
     for col in cols_needed:
         sub[col] = pd.to_numeric(sub[col], errors="coerce")
     sub = sub.dropna()
@@ -158,6 +162,7 @@ def run_panel(
     y = sub[dep_var]
     X_raw = sub[all_x_vars]
 
+<<<<<<< HEAD
     # ── 共线性检测：逐列贪心保留，对齐 Stata omit 行为 ──
     dropped = []
     X_arr = X_raw.values.astype(float)
@@ -167,16 +172,32 @@ def run_panel(
         for col in X_raw.columns:
             candidate = keep + [col]
             test = X_raw[candidate].values.astype(float)
+=======
+    # 自动移除完全共线的列
+    from numpy.linalg import matrix_rank
+    import numpy as np
+    X_arr = X_raw.values.astype(float)
+    rank = matrix_rank(X_arr)
+    if rank < X_raw.shape[1]:
+        # 逐列检测，移除导致共线的列
+        keep = []
+        dropped = []
+        for i, col in enumerate(X_raw.columns):
+            test = X_raw[keep + [col]].values.astype(float)
+>>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
             if matrix_rank(test) > len(keep):
                 keep.append(col)
             else:
                 dropped.append(col)
+<<<<<<< HEAD
         # 保护：至少保留1个变量，否则整体报错更清晰
         if len(keep) == 0:
             raise ValueError(
                 f"所有解释变量（{all_x_vars}）完全共线，无法估计。"
                 "请检查是否有常数列或变量之间完全线性相关。"
             )
+=======
+>>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
         X_raw = X_raw[keep]
 
     X = sm.add_constant(X_raw, has_constant="add")
@@ -259,6 +280,12 @@ def run_panel(
         "coefficients":  coefs,
         "hausman":       hausman,
         "stata_equivalent": stata_cmd,
+<<<<<<< HEAD
         "dropped_vars":  dropped,
         "notes": f"括号内为t值，{cov_type}标准误，***p<0.01, **p<0.05, *p<0.1。{omit_note}",
+=======
+        "dropped_vars": dropped,  # 新增
+        "notes": f"括号内为t值，{cov_type}标准误，***p<0.01, **p<0.05, *p<0.1" + 
+                 (f"。注：{dropped} 因完全共线性被自动移除，与 Stata 处理一致" if dropped else ""),
+>>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
     }
