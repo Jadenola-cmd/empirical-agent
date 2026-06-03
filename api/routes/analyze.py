@@ -14,44 +14,79 @@ router = APIRouter()
 
 
 class AnalysisRequest(BaseModel):
-    data: List[Dict[str, Any]]          # 清洗后的数据（来自第一层）
-    analysis_types: List[str]           # ["descriptive", "correlation", "ols", "panel_fe", "panel_re"]
-    variables: Optional[List[str]] = None   # 参与分析的变量（空=全部）
-
-    # 回归相关
+    data: List[Dict[str, Any]]
+    analysis_types: List[str]
+    variables: Optional[List[str]] = None
     dep_var: Optional[str] = None
     indep_vars: Optional[List[str]] = None
     control_vars: Optional[List[str]] = None
     robust_se: Optional[bool] = False
     cluster_var: Optional[str] = None
-
-    # 面板数据相关
-    entity_var: Optional[str] = None   # 个体变量，如 firm_id
-    time_var: Optional[str] = None     # 时间变量，如 year
-
-    # AI解读
+    entity_var: Optional[str] = None
+    time_var: Optional[str] = None
     interpret: Optional[bool] = False
     custom_question: Optional[str] = None
 
 
+def _gen_analyze_do(req: AnalysisRequest) -> str:
+    lines = ["", "* ── 实证分析（自动生成）──"]
+
+    if "descriptive" in req.analysis_types:
+        vars_str = " ".join(req.variables) if req.variables else "_all"
+        lines.append(f"summarize {vars_str}, detail")
+
+    if "correlation" in req.analysis_types:
+        vars_str = " ".join(req.variables) if req.variables else "_all"
+        lines.append(f"pwcorr {vars_str}, sig star(0.1)")
+
+    if "ols" in req.analysis_types and req.dep_var:
+        all_x = (req.indep_vars or []) + (req.control_vars or [])
+        if req.cluster_var:
+            se_opt = f", cluster({req.cluster_var})"
+        elif req.robust_se:
+            se_opt = ", robust"
+        else:
+            se_opt = ""
+        lines.append(f"reg {req.dep_var} {' '.join(all_x)}{se_opt}")
+
+    if "panel_fe" in req.analysis_types and req.dep_var:
+        all_x = (req.indep_vars or []) + (req.control_vars or [])
+        lines.append(f"xtset {req.entity_var} {req.time_var}")
+        if req.cluster_var:
+            se_opt = f", cluster({req.cluster_var})"
+        elif req.robust_se:
+            se_opt = ", robust"
+        else:
+            se_opt = ""
+        lines.append(f"xtreg {req.dep_var} {' '.join(all_x)}, fe{se_opt}")
+
+    if "panel_re" in req.analysis_types and req.dep_var:
+        all_x = (req.indep_vars or []) + (req.control_vars or [])
+        lines.append(f"xtset {req.entity_var} {req.time_var}")
+        lines.append(f"xtreg {req.dep_var} {' '.join(all_x)}, re")
+        lines.append("* Hausman 检验（FE vs RE）：")
+        lines.append(f"quietly xtreg {req.dep_var} {' '.join(all_x)}, fe")
+        lines.append("estimates store fe")
+        lines.append(f"quietly xtreg {req.dep_var} {' '.join(all_x)}, re")
+        lines.append("estimates store re")
+        lines.append("hausman fe re")
+
+    return "\n".join(lines)
+
+
 @router.post("/run")
 async def run_analysis(req: AnalysisRequest):
-    """
-    统一分析入口，支持同时运行多种分析
-    """
     if not req.data:
         raise HTTPException(status_code=400, detail="数据不能为空")
 
     df = pd.DataFrame(req.data)
 
-    # 只保留选择的变量
     if req.variables:
         missing_cols = [v for v in req.variables if v not in df.columns]
         if missing_cols:
             raise HTTPException(status_code=400, detail=f"变量不存在：{missing_cols}")
         df = df[req.variables]
 
-    # 数值列
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
 
     results = {}
@@ -101,17 +136,19 @@ async def run_analysis(req: AnalysisRequest):
         except Exception as e:
             errors[analysis_type] = str(e)
 
-    # AI 解读（可选）
     interpretation = None
     if req.interpret and results:
         try:
             interpretation = interpret_results(results, req.custom_question)
         except Exception as e:
-            interpretation = {"error": str(e)}
+            interpretation = {"text": f"AI解读失败：{str(e)}"}
+
+    do_analyze = _gen_analyze_do(req)
 
     return {
         "success": True,
         "results": results,
         "errors": errors if errors else None,
         "interpretation": interpretation,
+        "do_analyze": do_analyze,
     }

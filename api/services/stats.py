@@ -79,12 +79,14 @@ def run_ols(
         cols_needed.append(cluster_var)
 
     sub = df[cols_needed].dropna().copy()
-=======
-    # 强制转换为数值，非数值变 NaN 后再删除
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
-    for col in cols_needed:
+    # 只对 dep_var 和 x 变量做数值转换，cluster_var 保持原样
+    for col in [dep_var] + all_x_vars:
         sub[col] = pd.to_numeric(sub[col], errors="coerce")
     sub = sub.dropna()
+
+    if len(sub) == 0:
+        raise ValueError("转换为数值后数据为空，请检查变量是否为数值类型")
+
     y = sub[dep_var]
     X = sm.add_constant(sub[all_x_vars], has_constant="add")
 
@@ -116,20 +118,20 @@ def run_ols(
         })
 
     return {
-        "type":        "ols",
-        "dep_var":     dep_var,
-        "indep_vars":  indep_vars,
+        "type":         "ols",
+        "dep_var":      dep_var,
+        "indep_vars":   indep_vars,
         "control_vars": control_vars,
-        "n":           int(res.nobs),
-        "r2":          round(float(res.rsquared), 6),
-        "r2_adj":      round(float(res.rsquared_adj), 6),
-        "f_stat":      round(float(res.fvalue), 4) if res.fvalue else None,
-        "f_pvalue":    round(float(res.f_pvalue), 6) if res.f_pvalue else None,
-        "df_model":    int(res.df_model),
-        "df_resid":    int(res.df_resid),
-        "se_type":     se_type,
+        "n":            int(res.nobs),
+        "r2":           round(float(res.rsquared), 6),
+        "r2_adj":       round(float(res.rsquared_adj), 6),
+        "f_stat":       round(float(res.fvalue), 4) if res.fvalue else None,
+        "f_pvalue":     round(float(res.f_pvalue), 6) if res.f_pvalue else None,
+        "df_model":     int(res.df_model),
+        "df_resid":     int(res.df_resid),
+        "se_type":      se_type,
         "coefficients": coefs,
-        "notes":       f"括号内为t值，{se_type}标准误，***p<0.01, **p<0.05, *p<0.1",
+        "notes":        f"括号内为t值，{se_type}标准误，***p<0.01, **p<0.05, *p<0.1",
     }
 
 
@@ -152,33 +154,139 @@ def run_panel(
     if cluster_var:
         cols_needed.append(cluster_var)
 
-    sub = df[cols_needed].dropna().copy()
-    for col in cols_needed:
+    sub = df[cols_needed].copy()
+
+    # ── 关键修复：entity_var / time_var 保持字符串，只转换数值变量 ──
+    # entity_var（如股票代码000001）绝对不能被 to_numeric 转换，否则前导零丢失导致索引错乱
+    for col in [dep_var] + all_x_vars:
         sub[col] = pd.to_numeric(sub[col], errors="coerce")
-    sub = sub.dropna()
+    # time_var 通常是年份整数，可以转，但保持为 int 而非 float
+    sub[time_var] = pd.to_numeric(sub[time_var], errors="coerce")
+    # entity_var 强制转为字符串，确保股票代码等保持原样
+    sub[entity_var] = sub[entity_var].astype(str).str.strip()
+
+    sub = sub.dropna(subset=[dep_var] + all_x_vars + [time_var])
+
+    if len(sub) == 0:
+        raise ValueError("有效数据为空，请检查变量选择和缺失值情况")
+
+    # 检查面板结构
+    n_entities = sub[entity_var].nunique()
+    n_times = sub[time_var].nunique()
+    if n_entities < 2:
+        raise ValueError(f"个体变量 '{entity_var}' 只有 {n_entities} 个唯一值，无法做面板回归（至少需要2个个体）")
+    if n_times < 2:
+        raise ValueError(f"时间变量 '{time_var}' 只有 {n_times} 个唯一值，无法做面板回归（至少需要2个时间点）")
 
     sub = sub.set_index([entity_var, time_var])
     y = sub[dep_var]
     X_raw = sub[all_x_vars]
 
-<<<<<<< HEAD
-    # ── 共线性检测：逐列贪心保留，对齐 Stata omit 行为 ──
+    # ── 共线性检测 ──
     dropped = []
-    X_arr = X_raw.values.astype(float)
-    rank = matrix_rank(X_arr)
-    if rank < X_raw.shape[1]:
-        keep = []
-        for col in X_raw.columns:
-            candidate = keep + [col]
-            test = X_raw[candidate].values.astype(float)
-            if matrix_rank(test) > len(keep):
-                keep.append(col)
-            else:
-                dropped.append(col)
-        # 保护：至少保留1个变量，否则整体报错更清晰
-        if len(keep) == 0:
-            raise ValueError(
-                f"所有解释变量（{all_x_vars}）完全共线，无法估计。"
-                "请检查是否有常数列或变量之间完全线性相关。"
-            )
+    try:
+        X_arr = X_raw.values.astype(float)
+        rank = matrix_rank(X_arr)
+        if rank < X_raw.shape[1]:
+            keep = []
+            for col in X_raw.columns:
+                candidate = keep + [col]
+                test = X_raw[candidate].values.astype(float)
+                if matrix_rank(test) > len(keep):
+                    keep.append(col)
+                else:
+                    dropped.append(col)
+            if len(keep) == 0:
+                raise ValueError(
+                    f"所有解释变量（{all_x_vars}）完全共线，无法估计。"
+                    "请检查是否有常数列或变量之间完全线性相关。"
+                )
+            X_raw = X_raw[keep]
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"共线性检测失败：{str(e)}")
+
+    X = sm.add_constant(X_raw, has_constant="add")
+
+    if cluster_var:
+        cov_type = "clustered"
+        cov_kwds = {"cluster_entity": True}
+    elif robust_se:
+        cov_type = "robust"
+        cov_kwds = {}
+    else:
+        cov_type = "unadjusted"
+        cov_kwds = {}
+
+    if model_type == "fe":
+        model = PanelOLS(y, X, entity_effects=True, time_effects=False)
+        stata_cmd = f"xtreg {dep_var} {' '.join(X_raw.columns.tolist())}, fe"
+    else:
+        model = RandomEffects(y, X)
+        stata_cmd = f"xtreg {dep_var} {' '.join(X_raw.columns.tolist())}, re"
+
+    res = model.fit(cov_type=cov_type, check_rank=False, **cov_kwds)
+
+    # Hausman 检验
+    hausman = None
+    if model_type == "fe":
+        try:
+            re_model = RandomEffects(y, X)
+            re_res = re_model.fit(cov_type="unadjusted")
+            b_fe = res.params
+            b_re = re_res.params
+            common = b_fe.index.intersection(b_re.index)
+            diff = b_fe[common] - b_re[common]
+            var_fe = pd.DataFrame(res.cov, index=res.params.index, columns=res.params.index)
+            var_re = pd.DataFrame(re_res.cov, index=re_res.params.index, columns=re_res.params.index)
+            V = var_fe.loc[common, common] - var_re.loc[common, common]
+            chi2 = float(diff @ np.linalg.pinv(V.values) @ diff)
+            df_h = len(common)
+            p_h = float(1 - stats.chi2.cdf(chi2, df_h))
+            hausman = {
+                "chi2":       round(chi2, 4),
+                "df":         df_h,
+                "p_value":    round(p_h, 6),
+                "conclusion": "拒绝随机效应，建议使用固定效应" if p_h < 0.05 else "不拒绝随机效应"
+            }
+        except Exception:
+            hausman = None
+
+    coefs = []
+    for name in res.params.index:
+        p = float(res.pvalues[name])
+        coefs.append({
+            "variable":  name if name != "const" else "_cons",
+            "coef":      round(float(res.params[name]), 6),
+            "std_error": round(float(res.std_errors[name]), 6),
+            "t_stat":    round(float(res.tstats[name]), 4),
+            "p_value":   round(p, 6),
+            "sig":       sig_stars(p),
+        })
+
+    omit_note = ""
+    if dropped:
+        omit_note = f"注：{dropped} 因完全共线性被自动省略（omitted），与 Stata 处理一致。"
+
+    return {
+        "type":             model_type,
+        "dep_var":          dep_var,
+        "indep_vars":       indep_vars,
+        "control_vars":     control_vars,
+        "entity_var":       entity_var,
+        "time_var":         time_var,
+        "n":                int(res.nobs),
+        "n_entities":       n_entities,
+        "r2_within":        round(float(res.rsquared_within), 6) if hasattr(res, "rsquared_within") else None,
+        "r2_between":       round(float(res.rsquared_between), 6) if hasattr(res, "rsquared_between") else None,
+        "r2_overall":       round(float(res.rsquared_overall), 6) if hasattr(res, "rsquared_overall") else None,
+        "f_stat":           round(float(res.f_statistic.stat), 4) if hasattr(res, "f_statistic") else None,
+        "f_pvalue":         round(float(res.f_statistic.pval), 6) if hasattr(res, "f_statistic") else None,
+        "se_type":          cov_type,
+        "coefficients":     coefs,
+        "hausman":          hausman,
+        "stata_equivalent": stata_cmd,
+        "dropped_vars":     dropped,
+        "notes": f"括号内为t值，{cov_type}标准误，***p<0.01, **p<0.05, *p<0.1。{omit_note}",
     }

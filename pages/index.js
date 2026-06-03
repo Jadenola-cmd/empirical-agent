@@ -3,9 +3,203 @@ import Head from "next/head";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-// ─────────────────────────────────────────
-// Table renderers
-// ─────────────────────────────────────────
+// ─── 导出工具 ───────────────────────────────────────
+function exportXlsx(analyzeResults, cleanedData) {
+  import("xlsx").then(XLSX => {
+    const wb = XLSX.utils.book_new();
+
+    if (cleanedData?.data?.length) {
+      const ws = XLSX.utils.json_to_sheet(cleanedData.data);
+      XLSX.utils.book_append_sheet(wb, ws, "清洗数据");
+    }
+
+    const r = analyzeResults?.results;
+    if (!r) { XLSX.writeFile(wb, "实证分析结果.xlsx"); return; }
+
+    if (r.descriptive?.vars) {
+      const rows = [
+        ["VarName", "Obs", "Mean", "SD", "Min", "Median", "Max"],
+        ...r.descriptive.vars.map(v => [
+          v.name,
+          v.obs,
+          +v.mean.toFixed(3),
+          +v.sd.toFixed(3),
+          +v.min.toFixed(3),
+          +v.median.toFixed(3),
+          +v.max.toFixed(3),
+        ]),
+        [],
+        [r.descriptive.notes || "样本标准差（ddof=1），与 Stata summarize 一致"],
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "描述统计");
+    }
+
+    if (r.correlation?.vars) {
+      const vars = r.correlation.vars;
+      const header = ["", ...vars.map((_, i) => `(${i + 1})`)];
+      const dataRows = r.correlation.matrix.map((row, i) => [
+        vars[i],
+        ...row.map((cell, j) => i === j ? "1" : `${cell.coef.toFixed(3)}${cell.sig}`),
+      ]);
+      const rows = [header, ...dataRows, [], [r.correlation.notes || "***p<0.01, **p<0.05, *p<0.1"]];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "相关矩阵");
+    }
+
+    function buildRegSheet(reg, label) {
+      if (!reg?.coefficients) return null;
+      const isPanel = reg.type === "fe" || reg.type === "re";
+      const cons = reg.coefficients.find(c => c.variable === "_cons");
+      const vars = reg.coefficients.filter(c => c.variable !== "_cons");
+      const rows = [];
+      rows.push([label, "(1)"]);
+      rows.push(["", reg.dep_var]);
+      rows.push([]);
+      vars.forEach(c => {
+        rows.push([c.variable, `${c.coef.toFixed(3)}${c.sig}`]);
+        rows.push(["", `(${c.t_stat.toFixed(2)})`]);
+      });
+      if (cons) {
+        rows.push(["_cons", `${cons.coef.toFixed(3)}${cons.sig}`]);
+        rows.push(["", `(${cons.t_stat.toFixed(2)})`]);
+      }
+      rows.push([]);
+      rows.push(["ind FE", isPanel && reg.type === "fe" ? "Yes" : "No"]);
+      rows.push(["year FE", "No"]);
+      rows.push(["N", reg.n]);
+      if (isPanel) {
+        rows.push(["R² (within)", reg.r2_within?.toFixed(3)]);
+        rows.push(["R² (overall)", reg.r2_overall?.toFixed(3)]);
+      } else {
+        rows.push(["R²", reg.r2?.toFixed(3)]);
+        rows.push(["Adj. R²", reg.r2_adj?.toFixed(3)]);
+        rows.push(["F", reg.f_stat?.toFixed(3)]);
+      }
+      if (reg.hausman) {
+        rows.push([]);
+        rows.push([`Hausman检验: χ²=${reg.hausman.chi2}, p=${reg.hausman.p_value}`]);
+        rows.push([reg.hausman.conclusion]);
+      }
+      rows.push([]);
+      rows.push([reg.notes || "括号内为t值，***p<0.01, **p<0.05, *p<0.1"]);
+      if (reg.dropped_vars?.length) {
+        rows.push([`注：${reg.dropped_vars.join(", ")} 因完全共线性被自动移除`]);
+      }
+      return XLSX.utils.aoa_to_sheet(rows);
+    }
+
+    if (r.ols) { const ws = buildRegSheet(r.ols, "OLS 回归结果"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "OLS"); }
+    if (r.panel_fe) { const ws = buildRegSheet(r.panel_fe, "固定效应回归（xtreg, fe）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "固定效应"); }
+    if (r.panel_re) { const ws = buildRegSheet(r.panel_re, "随机效应回归（xtreg, re）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "随机效应"); }
+
+    XLSX.writeFile(wb, `实证分析_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  });
+}
+
+function exportDoFile(doClean, doAnalyze) {
+  const content = [
+    "* ════════════════════════════════════",
+    "* Stata Do 文件（由 Empirical Agent 自动生成）",
+    `* 生成时间：${new Date().toLocaleString("zh-CN")}`,
+    "* ════════════════════════════════════",
+    "",
+    doClean || "",
+    doAnalyze || "",
+    "",
+    "* 文件结束",
+  ].join("\n");
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `empirical_${new Date().toISOString().slice(0, 10)}.do`;
+  a.click();
+}
+
+// ─── 数据预览表格 ───────────────────────────────────
+function DataPreviewTable({ preview, columns, title }) {
+  if (!preview?.length) return null;
+  const cols = columns || Object.keys(preview[0]);
+  return (
+    <div className="preview-block">
+      <div className="prev-title">{title || "数据预览（前10行）"}</div>
+      <div className="prev-scroll">
+        <table className="prev-table">
+          <thead><tr>{cols.map(c => <th key={c}>{c}</th>)}</tr></thead>
+          <tbody>
+            {preview.map((row, i) => (
+              <tr key={i}>{cols.map(c => <td key={c}>{String(row[c] ?? "")}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── 字段映射 ───────────────────────────────────────
+function FieldMapper({ files, fieldMaps, onChange }) {
+  if (!files?.length) return null;
+  return (
+    <div className="field-mapper">
+      <div className="fm-hint">将各文件的列名统一为标准名（解决"股票代码 vs 证券代码"等问题）。留空表示不改名。</div>
+      {files.map(f => (
+        <div key={f.filename} className="fm-file">
+          <div className="fm-fname">📄 {f.filename}</div>
+          <div className="fm-cols">
+            {f.columns.map(col => {
+              const mapped = fieldMaps[f.filename]?.[col] || "";
+              return (
+                <div key={col} className="fm-row">
+                  <span className="fm-orig">{col}</span>
+                  <span className="fm-arrow">→</span>
+                  <input
+                    className="fm-input"
+                    value={mapped}
+                    placeholder={col}
+                    onChange={e => {
+                      const val = e.target.value.trim();
+                      onChange(prev => {
+                        const next = { ...prev };
+                        if (!next[f.filename]) next[f.filename] = {};
+                        if (val && val !== col) {
+                          next[f.filename][col] = val;
+                        } else {
+                          delete next[f.filename][col];
+                        }
+                        return next;
+                      });
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── 合并类型检查徽章 ────────────────────────────────
+function MergeTypeBadge({ mergeCheck }) {
+  if (!mergeCheck) return null;
+  const colors = { "1:1": "#2a7a2a", "1:N": "#2c4a8a", "N:N": "#8a2c2c", "unknown": "#888", "no_keys": "#888" };
+  return (
+    <div className="merge-check">
+      <span className="mc-type" style={{ background: colors[mergeCheck.type] || "#888" }}>{mergeCheck.type}</span>
+      {mergeCheck.warning && <span className="mc-warn">{mergeCheck.warning}</span>}
+      {!mergeCheck.warning && mergeCheck.type !== "no_keys" && mergeCheck.type !== "unknown" && (
+        <span className="mc-ok">✓ 合并类型正常</span>
+      )}
+      <div className="mc-details">
+        {mergeCheck.details?.map((d, i) => (
+          <span key={i} className={`mc-detail ${d.is_unique ? "ok" : "warn"}`}>{d.file}: {d.message}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── 学术表格 ───────────────────────────────────────
 function DescriptiveTable({ data }) {
   if (!data?.vars?.length) return null;
   return (
@@ -73,16 +267,11 @@ function RegressionTable({ data, label }) {
   const cons = data.coefficients.find(c => c.variable === "_cons");
   const vars = data.coefficients.filter(c => c.variable !== "_cons");
   const isPanel = data.type === "fe" || data.type === "re";
-
   return (
     <div className="result-block">
-      <div className="tbl-title">
-        {label || (isPanel ? (data.type === "fe" ? "固定效应回归" : "随机效应回归") : "OLS 回归结果")}
-      </div>
+      <div className="tbl-title">{label || "回归结果"}</div>
       {data.dropped_vars?.length > 0 && (
-        <div className="omit-notice">
-          ⚠️ 以下变量因完全共线性被自动省略（omitted）：{data.dropped_vars.join(", ")}
-        </div>
+        <div className="dropped-warn">⚠️ 以下变量因完全共线性被自动移除（对齐 Stata omit 行为）：{data.dropped_vars.join(", ")}</div>
       )}
       <table className="acad-table reg-tbl">
         <thead><tr>
@@ -136,55 +325,59 @@ function RegressionTable({ data, label }) {
   );
 }
 
-=======
-// ─────────────────────────────────────────
-// Tag selector
-// ─────────────────────────────────────────
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
 function TagSelector({ options, selected, onChange, single }) {
   return (
     <div className="tag-sel">
       {options.map(opt => (
-        <span
-          key={opt}
-          className={`vtag ${selected.includes(opt) ? "sel" : ""}`}
+        <span key={opt} className={`vtag ${selected.includes(opt) ? "sel" : ""}`}
           onClick={() => {
-            if (single) {
-              onChange(selected.includes(opt) ? [] : [opt]);
-            } else {
-              onChange(selected.includes(opt) ? selected.filter(v => v !== opt) : [...selected, opt]);
-            }
-          }}
-        >{opt}</span>
+            if (single) onChange(selected.includes(opt) ? [] : [opt]);
+            else onChange(selected.includes(opt) ? selected.filter(v => v !== opt) : [...selected, opt]);
+          }}>{opt}</span>
       ))}
     </div>
   );
 }
 
-// 列类型标签
-function DtypeBadge({ dtype }) {
-  const isNum = dtype?.includes("int") || dtype?.includes("float");
-  return (
-    <span className={`dtype-badge ${isNum ? "num" : "str"}`}>
-      {isNum ? "数值" : "文本"}
-    </span>
-  );
-}
-
-// ─────────────────────────────────────────
-// Main
-// ─────────────────────────────────────────
+// ─── 主组件 ─────────────────────────────────────────
 export default function Home() {
-  // Layer 1 state
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [filePreviews, setFilePreviews] = useState([]);
+  const [fieldMaps, setFieldMaps] = useState({});
+  const [showFieldMapper, setShowFieldMapper] = useState(false);
   const [mergeStrategy, setMergeStrategy] = useState("inner");
   const [mergeKeys, setMergeKeys] = useState([]);
+  const [mergeCheck, setMergeCheck] = useState(null);
+  const [mergeCheckLoading, setMergeCheckLoading] = useState(false);
   const [missingStrategy, setMissingStrategy] = useState("drop");
   const [outlierStrategy, setOutlierStrategy] = useState("none");
   const [outlierThreshold, setOutlierThreshold] = useState(3.0);
   const [dropCols, setDropCols] = useState([]);
-  const [logCols, setLogCols] = useState([]);   // ← NEW: 对数变换
+  const [strCols, setStrCols] = useState([]);
+  const [logVars, setLogVars] = useState([]);
+  const [cleanedData, setCleanedData] = useState(null);
+  const [cleanReport, setCleanReport] = useState(null);
+  const [cleanPreview, setCleanPreview] = useState(null);
+  const [doClean, setDoClean] = useState("");
+  const [layer1Loading, setLayer1Loading] = useState(false);
+
+  const [analysisTypes, setAnalysisTypes] = useState([]);
+  const [selectedVars, setSelectedVars] = useState([]);
+  const [depVar, setDepVar] = useState("");
+  const [indepVars, setIndepVars] = useState([]);
+  const [controlVars, setControlVars] = useState([]);
+  const [entityVar, setEntityVar] = useState("");
+  const [timeVar, setTimeVar] = useState("");
+  const [robustSE, setRobustSE] = useState(false);
+  const [clusterVar, setClusterVar] = useState("");
+  const [analyzeResults, setAnalyzeResults] = useState(null);
+  const [doAnalyze, setDoAnalyze] = useState("");
+  const [layer2Loading, setLayer2Loading] = useState(false);
+  const [interpret, setInterpret] = useState(false);
+  const [customQ, setCustomQ] = useState("");
+
+  const fileRef = useRef();
+
   async function handleUpload(newFiles) {
     if (!newFiles.length) return;
     const combined = [...uploadedFiles, ...Array.from(newFiles)].slice(0, 5);
@@ -197,62 +390,79 @@ export default function Home() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.detail || "上传失败");
       setFilePreviews(json.files);
-    } catch (e) {
-      alert("上传失败：" + e.message);
-    }
+      setMergeCheck(null);
+    } catch (e) { alert("上传失败：" + e.message); }
     setLayer1Loading(false);
   }
 
-  // ── 删除单个文件 ── NEW
-  function handleRemoveFile(index) {
-    const newFiles = uploadedFiles.filter((_, i) => i !== index);
-    const newPreviews = filePreviews.filter((_, i) => i !== index);
+  function removeFile(idx) {
+    const fn = uploadedFiles[idx]?.name;
+    const newFiles = uploadedFiles.filter((_, i) => i !== idx);
+    const newPreviews = filePreviews.filter((_, i) => i !== idx);
     setUploadedFiles(newFiles);
     setFilePreviews(newPreviews);
-    // 重置清洗结果
+    setMergeKeys([]);
+    setDropCols([]);
+    setStrCols([]);
+    setLogVars([]);
+    setFieldMaps(prev => { const n = { ...prev }; delete n[fn]; return n; });
+    setMergeCheck(null);
     setCleanedData(null);
     setCleanReport(null);
-    // 清理对应的mergeKey/logCols中已不存在的列
-    const remainingCols = newPreviews.flatMap(f => f.columns);
-    setMergeKeys(prev => prev.filter(k => remainingCols.includes(k)));
-    setLogCols(prev => prev.filter(k => remainingCols.includes(k)));
-    setDropCols(prev => prev.filter(k => remainingCols.includes(k)));
+    setCleanPreview(null);
   }
 
-  // ── Merge & Clean ──
+  async function handleCheckMerge() {
+    if (!uploadedFiles.length || !mergeKeys.length) return;
+    setMergeCheckLoading(true);
+    const form = new FormData();
+    uploadedFiles.forEach(f => form.append("files", f));
+    form.append("merge_config", JSON.stringify({ keys: mergeKeys, field_maps: fieldMaps }));
+    try {
+      const res = await fetch(`${API_URL}/api/clean/check-merge`, { method: "POST", body: form });
+      const json = await res.json();
+      setMergeCheck(json);
+    } catch (e) { alert("检查失败：" + e.message); }
+    setMergeCheckLoading(false);
+  }
+
   async function handleClean() {
     if (!uploadedFiles.length) return;
     setLayer1Loading(true);
-    setCleanedData(null);
-    setCleanReport(null);
-
+    setCleanedData(null); setCleanReport(null); setCleanPreview(null);
     const form = new FormData();
     uploadedFiles.forEach(f => form.append("files", f));
     form.append("merge_config", JSON.stringify({
       strategy: mergeStrategy,
       keys: mergeKeys,
       files_order: uploadedFiles.map(f => f.name),
+      field_maps: fieldMaps,
     }));
     form.append("clean_config", JSON.stringify({
       missing: missingStrategy,
       outlier: outlierStrategy,
       outlier_threshold: outlierThreshold,
       drop_cols: dropCols,
-      log_cols: logCols,   // ← NEW
+      str_cols: strCols,
+      log_vars: logVars,
+    }));
+    try {
+      const res = await fetch(`${API_URL}/api/clean/merge-and-clean`, { method: "POST", body: form });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.detail || "清洗失败");
+      setCleanedData({ data: json.data, columns: json.columns });
       setCleanReport(json.report);
-    } catch (e) {
-      alert("清洗失败：" + e.message);
-    }
+      setCleanPreview(json.preview);
+      setDoClean(json.do_clean || "");
+    } catch (e) { alert("清洗失败：" + e.message); }
     setLayer1Loading(false);
   }
 
-  // ── Analyze ──
   async function handleAnalyze() {
     if (!cleanedData) return alert("请先完成数据清洗");
     if (!analysisTypes.length) return alert("请选择至少一种分析方法");
     setLayer2Loading(true);
     setAnalyzeResults(null);
-
     try {
       const res = await fetch(`${API_URL}/api/analyze/run`, {
         method: "POST",
@@ -275,26 +485,21 @@ export default function Home() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.detail || "分析失败");
       setAnalyzeResults(json);
-    } catch (e) {
-      alert("分析失败：" + e.message);
-    }
+      setDoAnalyze(json.do_analyze || "");
+    } catch (e) { alert("分析失败：" + e.message); }
     setLayer2Loading(false);
   }
 
   const allCols = filePreviews.flatMap(f => f.columns);
+  const mappedCols = filePreviews.flatMap(f =>
+    f.columns.map(c => fieldMaps[f.filename]?.[c] || c)
+  );
   const uniqueCols = [...new Set(allCols)];
-  // 只对数值类型列提供对数变换
-  const numericColsForLog = filePreviews.length > 0
-    ? [...new Set(filePreviews.flatMap(f =>
-        Object.entries(f.dtypes || {})
-          .filter(([, dt]) => dt.includes("int") || dt.includes("float"))
-          .map(([col]) => col)
-      ))]
-    : [];
-
+  const uniqueMappedCols = [...new Set(mappedCols)];
   const cleanedCols = cleanedData?.columns || [];
   const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re"].includes(t));
   const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re"].includes(t));
+  const sectionNum = (base) => filePreviews.length > 1 ? base : base - 1;
 
   return (
     <>
@@ -313,48 +518,43 @@ export default function Home() {
           <p className="sub">与 Stata 结果一致 · 两层架构 · 面板数据支持</p>
         </div>
 
-<<<<<<< HEAD
-        {/* ═══ LAYER 1 ═══ */}
         <div className="layer-badge">第一层：数据清洗</div>
 
-        {/* 1.1 Upload */}
+        {/* 01 上传 */}
         <div className="section">
           <div className="sh"><span className="sn">01</span><span className="st">上传数据文件</span><span className="shint">最多5个</span></div>
-          <div
-            className="upload-zone"
-            onClick={() => fileRef.current.click()}
+          <div className="upload-zone" onClick={() => fileRef.current.click()}
             onDragOver={e => e.preventDefault()}
-            onDrop={e => { e.preventDefault(); handleUpload(e.dataTransfer.files); }}
-          >
+            onDrop={e => { e.preventDefault(); handleUpload(e.dataTransfer.files); }}>
             <input type="file" ref={fileRef} accept=".csv,.xlsx,.xls,.dta" multiple style={{ display: "none" }}
               onChange={e => handleUpload(e.target.files)} />
             <div className="uicon">📂</div>
             <h3>上传数据文件</h3>
-            <p>支持 .csv / .xlsx / .xls / .dta · 可多选 · 拖拽上传</p>
+            <p>支持 .csv / .xlsx / .xls / .dta · 可多选</p>
           </div>
 
           {filePreviews.length > 0 && (
             <div className="file-cards">
               {filePreviews.map((f, i) => (
                 <div key={i} className="file-card">
-                  {/* ← DELETE BUTTON */}
-                  <button
-                    className="fc-delete"
-                    title="删除此文件"
-                    onClick={(e) => { e.stopPropagation(); handleRemoveFile(i); }}
-                  >✕</button>
-                  <div className="fc-name">📄 {f.filename}</div>
-                  <div className="fc-meta">{f.rows.toLocaleString()} 行 × {f.cols} 列</div>
-                  {/* 列名 + 类型 */}
-                  <div className="fc-cols-wrap">
-                    {f.columns.map(col => (
-                      <span key={col} className="fc-col-tag">
-                        {col}
-                        <DtypeBadge dtype={f.dtypes?.[col]} />
-                      </span>
-                    ))}
+                  <div className="fc-header">
+                    <div className="fc-name">📄 {f.filename}</div>
+                    <button className="fc-del" onClick={() => removeFile(i)}>✕</button>
                   </div>
-                  {Object.entries(f.missing).some(([, v]) => v > 0) && (
+                  <div className="fc-meta">{f.rows.toLocaleString()} 行 × {f.cols} 列</div>
+                  <div className="fc-cols">
+                    {f.columns.map(c => {
+                      const dtype = f.dtypes?.[c] || "";
+                      const isNum = dtype.includes("float") || dtype.includes("int");
+                      const mappedName = fieldMaps[f.filename]?.[c];
+                      return (
+                        <span key={c} className={`fc-col-tag ${isNum ? "num" : "str"}`}>
+                          {mappedName ? `${c}→${mappedName}` : c}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  {Object.entries(f.missing || {}).some(([, v]) => v > 0) && (
                     <div className="fc-missing">
                       缺失：{Object.entries(f.missing).filter(([, v]) => v > 0).map(([k, v]) => `${k}(${v})`).join(", ")}
                     </div>
@@ -365,34 +565,57 @@ export default function Home() {
           )}
         </div>
 
-        {/* 1.2 Merge config */}
+        {/* 02 字段映射 */}
+        {filePreviews.length > 0 && (
+          <div className="section">
+            <div className="sh">
+              <span className="sn">02</span>
+              <span className="st">字段映射</span>
+              <span className="shint">可选 · 统一列名</span>
+              <button className="toggle-btn" onClick={() => setShowFieldMapper(v => !v)}>
+                {showFieldMapper ? "收起 ▲" : "展开 ▼"}
+              </button>
+            </div>
+            {showFieldMapper && (
+              <FieldMapper files={filePreviews} fieldMaps={fieldMaps} onChange={setFieldMaps} />
+            )}
+          </div>
+        )}
+
+        {/* 03 合并配置（多文件时显示） */}
         {filePreviews.length > 1 && (
           <div className="section">
-            <div className="sh"><span className="sn">02</span><span className="st">合并配置</span></div>
+            <div className="sh"><span className="sn">03</span><span className="st">合并配置</span></div>
             <div className="config-grid">
               <div className="config-item">
                 <label className="cfg-label">合并方式</label>
                 <div className="radio-group">
-                  {[["inner","取交集(inner)"],["left","左连接(left)"],["outer","取并集(outer)"],["concat","纵向堆叠"]].map(([v, l]) => (
+                  {[["inner","取交集"],["left","左连接"],["outer","取并集"],["concat","纵向堆叠"]].map(([v, l]) => (
                     <label key={v} className={`radio-btn ${mergeStrategy === v ? "sel" : ""}`} onClick={() => setMergeStrategy(v)}>{l}</label>
                   ))}
                 </div>
               </div>
               {mergeStrategy !== "concat" && (
                 <div className="config-item">
-                  <label className="cfg-label">合并键（面板数据选 entity + time）</label>
-                  <TagSelector options={uniqueCols} selected={mergeKeys} onChange={setMergeKeys} />
+                  <label className="cfg-label">合并键（映射后列名）</label>
+                  <TagSelector options={uniqueMappedCols} selected={mergeKeys} onChange={keys => { setMergeKeys(keys); setMergeCheck(null); }} />
+                  {mergeKeys.length > 0 && (
+                    <button className="check-btn" onClick={handleCheckMerge} disabled={mergeCheckLoading}>
+                      {mergeCheckLoading ? "检查中…" : "🔍 检查合并类型"}
+                    </button>
+                  )}
+                  <MergeTypeBadge mergeCheck={mergeCheck} />
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {/* 1.3 Clean config */}
+        {/* 04 清洗配置 */}
         {filePreviews.length > 0 && (
           <div className="section">
             <div className="sh">
-              <span className="sn">{filePreviews.length > 1 ? "03" : "02"}</span>
+              <span className="sn">{filePreviews.length > 1 ? "04" : "03"}</span>
               <span className="st">清洗配置</span>
             </div>
             <div className="config-grid">
@@ -407,7 +630,7 @@ export default function Home() {
               <div className="config-item">
                 <label className="cfg-label">异常值处理</label>
                 <div className="radio-group">
-                  {[["none","不处理"],["zscore","Z-score法"],["iqr","IQR法"]].map(([v, l]) => (
+                  {[["none","不处理"],["zscore","Z-score"],["iqr","IQR法"]].map(([v, l]) => (
                     <label key={v} className={`radio-btn ${outlierStrategy === v ? "sel" : ""}`} onClick={() => setOutlierStrategy(v)}>{l}</label>
                   ))}
                 </div>
@@ -417,55 +640,69 @@ export default function Home() {
                     placeholder={outlierStrategy === "zscore" ? "σ倍数（默认3）" : "IQR倍数（默认1.5）"} />
                 )}
               </div>
-
-              {/* ← 对数变换 NEW */}
-              {numericColsForLog.length > 0 && (
-                <div className="config-item" style={{ gridColumn: "1 / -1" }}>
-                  <label className="cfg-label">
-                    对数变换 <span className="cfg-hint">生成 ln_变量名 新列，含0或负值自动用 ln(1+x)</span>
-                  </label>
-                  <TagSelector options={numericColsForLog} selected={logCols} onChange={setLogCols} />
+              {uniqueCols.length > 0 && (
+                <div className="config-item">
+                  <label className="cfg-label">强制文本型列 <span className="cfg-hint">防止股票代码被识别为数字</span></label>
+                  <TagSelector options={uniqueCols} selected={strCols} onChange={setStrCols} />
                 </div>
               )}
-
-            </div>
-            {cleanReport.steps?.map((s, i) => (
-              <div key={i} className="cr-step">• {s.step}：{s.detail}</div>
-            ))}
-
-            {/* 清洗后列预览 */}
-            {cleanedData?.columns && (
-              <div className="cr-cols-preview">
-                <div className="cr-cols-title">清洗后字段（{cleanedData.columns.length} 列）</div>
-                <div className="cr-cols-list">
-                  {cleanedData.columns.map(col => (
-                    <span key={col} className="fc-col-tag">
-                      {col}
-                      <DtypeBadge dtype={cleanedData.dtypes?.[col]} />
-                    </span>
-                  ))}
+              {uniqueCols.length > 0 && (
+                <div className="config-item">
+                  <label className="cfg-label">对数变换 <span className="cfg-hint">生成 ln_xxx 新列</span></label>
+                  <TagSelector options={uniqueCols} selected={logVars} onChange={setLogVars} />
                 </div>
-              </div>
-            )}
+              )}
+              {uniqueCols.length > 0 && (
+                <div className="config-item" style={{ gridColumn: "1 / -1" }}>
+                  <label className="cfg-label">删除列 <span className="cfg-hint">可选</span></label>
+                  <TagSelector options={uniqueCols} selected={dropCols} onChange={setDropCols} />
+                </div>
+              )}
+            </div>
+            <button className="run-btn" onClick={handleClean} disabled={layer1Loading}>
+              {layer1Loading ? "处理中…" : "执行清洗 →"}
+            </button>
           </div>
         )}
 
-        {/* ═══ LAYER 2 ═══ */}
+        {/* 清洗报告 */}
+        {cleanReport && (
+          <div className="clean-report">
+            <div className="cr-title">✅ 清洗完成</div>
+            <div className="cr-stats">
+              <span>{cleanReport.rows_before.toLocaleString()} 行 → {cleanReport.rows_after.toLocaleString()} 行</span>
+              <span>处理缺失值 {cleanReport.missing_handled} 个</span>
+              <span>移除异常值 {cleanReport.outliers_removed} 行</span>
+            </div>
+            {cleanReport.steps?.map((s, i) => <div key={i} className="cr-step">• {s.step}：{s.detail}</div>)}
+          </div>
+        )}
+
+        {/* 数据预览 */}
+        {cleanPreview && (
+          <DataPreviewTable
+            preview={cleanPreview}
+            columns={cleanedCols}
+            title={`清洗后数据预览（前10行，共 ${cleanedData?.data?.length?.toLocaleString()} 行）`}
+          />
+        )}
+
+        {/* ══ LAYER 2 ══ */}
         {cleanedData && (
           <>
             <hr className="divider" />
             <div className="layer-badge">第二层：实证分析</div>
 
-            {/* 2.1 Analysis type */}
+            {/* 01 分析方法 */}
             <div className="section">
               <div className="sh"><span className="sn">01</span><span className="st">选择分析方法</span><span className="shint">可多选</span></div>
               <div className="analysis-grid">
                 {[
                   { type: "descriptive", icon: "📊", title: "描述性统计", desc: "均值/SD/分布 · 对齐 Stata summarize" },
                   { type: "correlation", icon: "🔗", title: "相关系数矩阵", desc: "Pearson + 显著性 · 对齐 Stata pwcorr" },
-                  { type: "ols",         icon: "📈", title: "OLS 回归", desc: "普通最小二乘 · 稳健/聚类SE · 对齐 Stata regress" },
-                  { type: "panel_fe",    icon: "🏛️", title: "固定效应", desc: "entity FE · Hausman检验 · 对齐 Stata xtreg, fe" },
-                  { type: "panel_re",    icon: "🎲", title: "随机效应", desc: "GLS估计 · 对齐 Stata xtreg, re" },
+                  { type: "ols",         icon: "📈", title: "OLS 回归",    desc: "普通最小二乘 · 稳健/聚类SE" },
+                  { type: "panel_fe",    icon: "🏛️", title: "固定效应",   desc: "entity FE · Hausman检验" },
+                  { type: "panel_re",    icon: "🎲", title: "随机效应",    desc: "GLS估计 · xtreg, re" },
                 ].map(card => (
                   <div key={card.type}
                     className={`acard ${analysisTypes.includes(card.type) ? "active" : ""}`}
@@ -480,15 +717,14 @@ export default function Home() {
               </div>
             </div>
 
-            {/* 2.2 Variable selection */}
+            {/* 02 变量配置 */}
             <div className="section">
               <div className="sh"><span className="sn">02</span><span className="st">变量配置</span></div>
               <div className="var-box">
                 <div className="var-row">
-                  <span className="vl">参与分析的变量 <span className="vh">不选=全部</span></span>
+                  <span className="vl">参与分析的变量 <span className="vh">不选=全部数值列</span></span>
                   <TagSelector options={cleanedCols} selected={selectedVars} onChange={setSelectedVars} />
                 </div>
-
                 {needsReg && (
                   <>
                     <div className="var-row">
@@ -505,7 +741,6 @@ export default function Home() {
                     </div>
                   </>
                 )}
-
                 {needsPanel && (
                   <>
                     <div className="var-row">
@@ -518,21 +753,16 @@ export default function Home() {
                     </div>
                   </>
                 )}
-
                 {needsReg && (
                   <div className="var-row">
                     <span className="vl">标准误</span>
                     <div className="radio-group">
                       {[["conventional","常规SE"],["robust","稳健SE(HC1)"],["cluster","聚类SE"]].map(([v, l]) => (
-                        <label key={v} className={`radio-btn ${
-                          (v === "conventional" && !robustSE && !clusterVar) ||
-                          (v === "robust" && robustSE && !clusterVar) ||
-                          (v === "cluster" && clusterVar) ? "sel" : ""
-                        }`}
+                        <label key={v}
+                          className={`radio-btn ${(v === "conventional" && !robustSE && !clusterVar) || (v === "robust" && robustSE && !clusterVar) || (v === "cluster" && clusterVar) ? "sel" : ""}`}
                           onClick={() => {
                             if (v === "conventional") { setRobustSE(false); setClusterVar(""); }
                             else if (v === "robust") { setRobustSE(true); setClusterVar(""); }
-                            else { setRobustSE(false); }
                           }}>{l}</label>
                       ))}
                     </div>
@@ -547,7 +777,7 @@ export default function Home() {
               </div>
             </div>
 
-            {/* 2.3 AI interpret */}
+            {/* 03 AI解读 */}
             <div className="section">
               <div className="sh"><span className="sn">03</span><span className="st">AI 解读（可选）</span></div>
               <div className="interp-row">
@@ -564,7 +794,7 @@ export default function Home() {
               </button>
             </div>
 
-            {/* Results */}
+            {/* 结果 */}
             {analyzeResults && (
               <div className="result-area">
                 <div className="sh"><span className="sn">OUT</span><span className="st">分析结果</span></div>
@@ -572,15 +802,19 @@ export default function Home() {
                   <div className="result-header">
                     <span className="rbadge">{analysisTypes.join(" + ").toUpperCase()}</span>
                     <span className="rtitle">实证分析报告</span>
-                    <button className="export-btn" onClick={() => {
-                      const el = document.getElementById("result-content");
-                      if (!el) return;
-                      const blob = new Blob([el.innerText], { type: "text/plain" });
-                      const a = document.createElement("a");
-                      a.href = URL.createObjectURL(blob);
-                      a.download = `实证分析_${new Date().toISOString().slice(0,10)}.txt`;
-                      a.click();
-                    }}>导出 TXT</button>
+                    <div className="export-btns">
+                      <button className="export-btn" onClick={() => exportXlsx(analyzeResults, cleanedData)}>⬇ xlsx</button>
+                      <button className="export-btn" onClick={() => exportDoFile(doClean, doAnalyze)}>⬇ do 文件</button>
+                      <button className="export-btn" onClick={() => {
+                        const el = document.getElementById("result-content");
+                        if (!el) return;
+                        const blob = new Blob([el.innerText], { type: "text/plain" });
+                        const a = document.createElement("a");
+                        a.href = URL.createObjectURL(blob);
+                        a.download = `实证分析_${new Date().toISOString().slice(0,10)}.txt`;
+                        a.click();
+                      }}>⬇ txt</button>
+                    </div>
                   </div>
                   <div className="result-body" id="result-content">
                     {analyzeResults.errors && Object.entries(analyzeResults.errors).map(([k, v]) => (
@@ -619,34 +853,79 @@ export default function Home() {
         .sub { font-family: 'Playfair Display', serif; font-size: 14px; color: #8a8078; font-style: italic; }
         .layer-badge { display: inline-block; background: #2c4a8a; color: white; font-size: 11px; font-weight: 700; letter-spacing: 2px; padding: 4px 14px; border-radius: 4px; margin-bottom: 24px; font-family: 'IBM Plex Mono', monospace; }
         .section { margin-bottom: 28px; }
-        .sh { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+        .sh { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
         .sn { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #2c4a8a; font-weight: 500; background: rgba(44,74,138,0.08); border: 1px solid rgba(44,74,138,0.2); padding: 2px 8px; border-radius: 3px; letter-spacing: 1px; }
         .st { font-size: 12px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; color: #3a3530; }
         .shint { font-size: 11px; color: #8a8078; font-family: 'IBM Plex Mono', monospace; background: #f0ece3; border: 1px solid #ddd8cc; padding: 2px 8px; border-radius: 10px; }
+        .toggle-btn { font-size: 11px; padding: 3px 10px; border: 1px solid #ddd8cc; border-radius: 4px; cursor: pointer; background: #f0ece3; font-family: 'IBM Plex Mono', monospace; color: #5a5a5a; margin-left: auto; }
+        .toggle-btn:hover { border-color: #2c4a8a; color: #2c4a8a; }
         .upload-zone { border: 2px dashed #ddd8cc; border-radius: 8px; padding: 40px 24px; text-align: center; cursor: pointer; background: #fffef9; transition: all 0.2s; }
         .upload-zone:hover { border-color: #2c4a8a; }
         .uicon { font-size: 28px; margin-bottom: 10px; }
         .upload-zone h3 { font-family: 'Playfair Display', serif; font-size: 15px; margin-bottom: 4px; }
         .upload-zone p { font-size: 12px; color: #8a8078; font-family: 'IBM Plex Mono', monospace; }
         .file-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 14px; }
-        .file-card { background: #fffef9; border: 1px solid #ddd8cc; border-radius: 8px; padding: 12px 14px; position: relative; }
-        /* ── 删除按钮 ── */
-        .fc-delete { position: absolute; top: 8px; right: 8px; background: none; border: none; cursor: pointer; font-size: 13px; color: #bbb; line-height: 1; padding: 2px 5px; border-radius: 4px; transition: all 0.15s; }
-        .fc-delete:hover { background: #fde8e8; color: #c0392b; }
-        .fc-name { font-size: 12px; font-weight: 600; color: #2c4a8a; margin-bottom: 4px; font-family: 'IBM Plex Mono', monospace; padding-right: 20px; }
+        .file-card { background: #fffef9; border: 1px solid #ddd8cc; border-radius: 8px; padding: 12px 14px; }
+        .fc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
+        .fc-name { font-size: 12px; font-weight: 600; color: #2c4a8a; font-family: 'IBM Plex Mono', monospace; }
+        .fc-del { background: none; border: none; color: #bbb; cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1; }
+        .fc-del:hover { color: #8a2c2c; }
         .fc-meta { font-size: 11px; color: #8a8078; font-family: 'IBM Plex Mono', monospace; margin-bottom: 6px; }
-        /* ── 列名+类型 ── */
-        .fc-cols-wrap { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
-        .fc-col-tag { display: inline-flex; align-items: center; gap: 3px; background: #f0ece3; border: 1px solid #ddd8cc; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-family: 'IBM Plex Mono', monospace; }
-        .dtype-badge { font-size: 9px; padding: 1px 4px; border-radius: 3px; font-weight: 600; }
-        .dtype-badge.num { background: rgba(44,74,138,0.12); color: #2c4a8a; }
-        .dtype-badge.str { background: rgba(138,80,44,0.10); color: #8a502c; }
-        .fc-missing { font-size: 11px; color: #8a2c2c; margin-top: 4px; font-family: 'IBM Plex Mono', monospace; }
+        .fc-cols { display: flex; flex-wrap: wrap; gap: 4px; }
+        .fc-col-tag { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-family: 'IBM Plex Mono', monospace; }
+        .fc-col-tag.num { background: rgba(44,74,138,0.08); color: #2c4a8a; border: 1px solid rgba(44,74,138,0.2); }
+        .fc-col-tag.str { background: #f0ece3; color: #8a8078; border: 1px solid #ddd8cc; }
+        .fc-missing { font-size: 11px; color: #8a2c2c; margin-top: 6px; font-family: 'IBM Plex Mono', monospace; }
+        .field-mapper { background: #fffef9; border: 1px solid #ddd8cc; border-radius: 8px; padding: 16px 20px; }
+        .fm-hint { font-size: 11px; color: #8a8078; font-family: 'IBM Plex Mono', monospace; margin-bottom: 12px; }
+        .fm-file { margin-bottom: 16px; }
+        .fm-file:last-child { margin-bottom: 0; }
+        .fm-fname { font-size: 11px; font-weight: 600; color: #2c4a8a; font-family: 'IBM Plex Mono', monospace; margin-bottom: 8px; }
+        .fm-cols { display: flex; flex-wrap: wrap; gap: 8px; }
+        .fm-row { display: flex; align-items: center; gap: 6px; }
+        .fm-orig { font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: #5a5a5a; min-width: 80px; }
+        .fm-arrow { font-size: 11px; color: #bbb; }
+        .fm-input { font-size: 11px; font-family: 'IBM Plex Mono', monospace; border: 1px solid #ddd8cc; border-radius: 4px; padding: 3px 8px; background: #f7f5f0; outline: none; width: 100px; }
+        .fm-input:focus { border-color: #2c4a8a; background: white; }
         .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; background: #fffef9; border: 1px solid #ddd8cc; border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; }
         @media (max-width: 600px) { .config-grid { grid-template-columns: 1fr; } }
-        .config-item { }
         .cfg-label { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #8a8078; display: block; margin-bottom: 8px; font-family: 'IBM Plex Mono', monospace; text-transform: uppercase; }
-        .cfg-hint { font-size: 10px; color: #bbb; font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+        .cfg-hint { font-size: 10px; color: #bbb; font-weight: 400; letter-spacing: 0; text-transform: none; }
+        .check-btn { margin-top: 10px; font-size: 11px; padding: 4px 12px; border: 1px solid #2c4a8a; border-radius: 4px; cursor: pointer; background: white; color: #2c4a8a; font-family: 'IBM Plex Mono', monospace; display: block; }
+        .check-btn:hover { background: rgba(44,74,138,0.06); }
+        .check-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .merge-check { margin-top: 10px; display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; }
+        .mc-type { font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700; color: white; padding: 2px 10px; border-radius: 4px; }
+        .mc-warn { font-size: 11px; color: #8a2c2c; font-family: 'IBM Plex Mono', monospace; background: rgba(138,44,44,0.06); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(138,44,44,0.2); }
+        .mc-ok { font-size: 11px; color: #2a7a2a; font-family: 'IBM Plex Mono', monospace; }
+        .mc-details { width: 100%; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+        .mc-detail { font-size: 11px; font-family: 'IBM Plex Mono', monospace; padding: 2px 8px; border-radius: 4px; }
+        .mc-detail.ok { background: rgba(42,122,42,0.08); color: #2a7a2a; border: 1px solid rgba(42,122,42,0.2); }
+        .mc-detail.warn { background: rgba(138,44,44,0.06); color: #8a2c2c; border: 1px solid rgba(138,44,44,0.2); }
+        .radio-group { display: flex; flex-wrap: wrap; gap: 6px; }
+        .radio-btn { font-size: 11px; padding: 4px 10px; border: 1px solid #ddd8cc; border-radius: 4px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; color: #5a5a5a; transition: all 0.15s; user-select: none; }
+        .radio-btn.sel { background: #2c4a8a; color: white; border-color: #2c4a8a; }
+        .radio-btn:hover:not(.sel) { border-color: #2c4a8a; color: #2c4a8a; }
+        .threshold-input { margin-top: 8px; width: 160px; background: #f7f5f0; border: 1px solid #ddd8cc; border-radius: 6px; padding: 5px 10px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; outline: none; }
+        .tag-sel { display: flex; flex-wrap: wrap; gap: 6px; }
+        .vtag { background: #f0ece3; border: 1px solid #ddd8cc; border-radius: 4px; padding: 3px 10px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; cursor: pointer; transition: all 0.15s; user-select: none; }
+        .vtag:hover { border-color: #2c4a8a; color: #2c4a8a; }
+        .vtag.sel { background: #2c4a8a; color: white; border-color: #2c4a8a; }
+        .run-btn { background: #2c4a8a; color: white; border: none; border-radius: 6px; padding: 10px 24px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'IBM Plex Sans', sans-serif; transition: all 0.15s; }
+        .run-btn:hover { background: #1e3a6e; }
+        .run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .clean-report { background: rgba(44,74,138,0.04); border: 1px solid rgba(44,74,138,0.2); border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; }
+        .cr-title { font-weight: 600; color: #2c4a8a; margin-bottom: 8px; font-size: 13px; }
+        .cr-stats { display: flex; gap: 20px; flex-wrap: wrap; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #3a3530; margin-bottom: 8px; }
+        .cr-step { font-size: 12px; color: #5a5a5a; font-family: 'IBM Plex Mono', monospace; line-height: 1.8; }
+        .preview-block { margin-bottom: 24px; background: #fffef9; border: 1px solid #ddd8cc; border-radius: 8px; overflow: hidden; }
+        .prev-title { font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; color: #8a8078; padding: 10px 16px; border-bottom: 1px solid #ddd8cc; background: #f0ece3; letter-spacing: 1px; text-transform: uppercase; }
+        .prev-scroll { overflow-x: auto; }
+        .prev-table { width: 100%; border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+        .prev-table th { background: #f7f5f0; padding: 6px 12px; text-align: left; font-weight: 600; color: #3a3530; border-bottom: 1px solid #ddd8cc; white-space: nowrap; }
+        .prev-table td { padding: 5px 12px; border-bottom: 1px solid #f0ece3; color: #5a5a5a; white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+        .prev-table tr:last-child td { border-bottom: none; }
+        .prev-table tr:hover td { background: rgba(44,74,138,0.03); }
         .divider { border: none; border-top: 2px solid #ddd8cc; margin: 36px 0; }
         .analysis-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
         @media (max-width: 700px) { .analysis-grid { grid-template-columns: 1fr 1fr; } }
@@ -665,17 +944,16 @@ export default function Home() {
         .custom-q { width: 100%; margin-top: 10px; border: 1px solid #ddd8cc; border-radius: 6px; padding: 10px 14px; font-size: 13px; font-family: 'IBM Plex Sans', sans-serif; background: #fffef9; outline: none; resize: none; min-height: 64px; }
         .result-area { margin-top: 8px; }
         .result-paper { background: #fffef9; border: 1px solid #ddd8cc; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
-        .result-header { background: #1a1a1a; color: white; padding: 14px 20px; display: flex; align-items: center; gap: 12px; }
+        .result-header { background: #1a1a1a; color: white; padding: 14px 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
         .rbadge { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 2px; background: rgba(255,255,255,0.12); padding: 3px 10px; border-radius: 3px; }
         .rtitle { font-family: 'Playfair Display', serif; font-size: 15px; flex: 1; }
-        .export-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; border-radius: 5px; padding: 5px 12px; font-size: 11px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; }
+        .export-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+        .export-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; border-radius: 5px; padding: 5px 12px; font-size: 11px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
+        .export-btn:hover { background: rgba(255,255,255,0.2); }
         .result-body { padding: 32px; }
         .result-footer { padding: 10px 32px; border-top: 1px solid #ddd8cc; background: #f0ece3; font-size: 11px; color: #8a8078; font-style: italic; font-family: 'Playfair Display', serif; }
         .err-box { color: #8a2c2c; font-family: 'IBM Plex Mono', monospace; font-size: 12px; margin-bottom: 8px; }
-<<<<<<< HEAD
-        .omit-notice { background: #fff8e6; border: 1px solid #f0cc6e; border-radius: 5px; padding: 8px 12px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; color: #7a5a00; margin-bottom: 12px; }
-=======
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
+        .dropped-warn { background: rgba(138,100,0,0.06); border: 1px solid rgba(138,100,0,0.2); border-radius: 4px; padding: 8px 12px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: #7a5a00; margin-bottom: 12px; }
         .result-block { margin-bottom: 40px; }
         .result-block + .result-block { padding-top: 32px; border-top: 2px solid #ddd8cc; }
         .tbl-title { font-family: 'Playfair Display', serif; font-size: 15px; font-weight: 600; text-align: center; margin-bottom: 12px; }
