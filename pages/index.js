@@ -4,11 +4,7 @@ import Head from "next/head";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // ─────────────────────────────────────────
-<<<<<<< HEAD
 // Table renderers
-=======
-// Table renderers (fixed templates)
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
 // ─────────────────────────────────────────
 function DescriptiveTable({ data }) {
   if (!data?.vars?.length) return null;
@@ -83,7 +79,6 @@ function RegressionTable({ data, label }) {
       <div className="tbl-title">
         {label || (isPanel ? (data.type === "fe" ? "固定效应回归" : "随机效应回归") : "OLS 回归结果")}
       </div>
-<<<<<<< HEAD
       {data.dropped_vars?.length > 0 && (
         <div className="omit-notice">
           ⚠️ 以下变量因完全共线性被自动省略（omitted）：{data.dropped_vars.join(", ")}
@@ -136,61 +131,11 @@ function RegressionTable({ data, label }) {
           <br />{data.hausman.conclusion}
         </div>
       )}
-=======
-      <table className="acad-table reg-tbl">
-        <thead><tr>
-          <th className="col-var"></th>
-          <th className="col-reg">(1)<br /><span className="depvar">{data.dep_var}</span></th>
-        </tr></thead>
-        <tbody>
-          {vars.map((c, i) => (
-            <tr key={i}>
-              <td className="col-var">{c.variable}</td>
-              <td className="col-reg">
-                <div>{c.coef.toFixed(3)}<sup className="sig">{c.sig}</sup></div>
-                <div className="tval">({c.t_stat.toFixed(2)})</div>
-              </td>
-            </tr>
-          ))}
-          {cons && (
-            <tr>
-              <td className="col-var">_cons</td>
-              <td className="col-reg">
-                <div>{cons.coef.toFixed(3)}<sup className="sig">{cons.sig}</sup></div>
-                <div className="tval">({cons.t_stat.toFixed(2)})</div>
-              </td>
-            </tr>
-          )}
-          <tr className="fe-row"><td className="col-var">ind FE</td><td className="col-reg">{isPanel && data.type === "fe" ? "Yes" : "No"}</td></tr>
-          <tr className="fe-row"><td className="col-var">year FE</td><td className="col-reg">No</td></tr>
-          <tr className="stat-row"><td className="col-var">N</td><td className="col-reg">{data.n?.toLocaleString()}</td></tr>
-          {isPanel ? (
-            <>
-              <tr className="stat-row"><td className="col-var">R² (within)</td><td className="col-reg">{data.r2_within?.toFixed(3)}</td></tr>
-              <tr className="stat-row"><td className="col-var">R² (overall)</td><td className="col-reg">{data.r2_overall?.toFixed(3)}</td></tr>
-            </>
-          ) : (
-            <>
-              <tr className="stat-row"><td className="col-var">R²</td><td className="col-reg">{data.r2?.toFixed(3)}</td></tr>
-              <tr className="stat-row"><td className="col-var">Adj. R²</td><td className="col-reg">{data.r2_adj?.toFixed(3)}</td></tr>
-              <tr className="stat-row"><td className="col-var">F</td><td className="col-reg">{data.f_stat?.toFixed(3)}</td></tr>
-            </>
-          )}
-        </tbody>
-      </table>
-      {data.hausman && (
-        <div className="hausman-box">
-          <strong>Hausman 检验</strong>：χ²={data.hausman.chi2}，p={data.hausman.p_value}
-          <br />{data.hausman.conclusion}
-        </div>
-      )}
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
       <div className="tbl-note">{data.notes}</div>
     </div>
   );
 }
 
-<<<<<<< HEAD
 =======
 // ─────────────────────────────────────────
 // Tag selector
@@ -216,7 +161,6 @@ function TagSelector({ options, selected, onChange, single }) {
   );
 }
 
-<<<<<<< HEAD
 // 列类型标签
 function DtypeBadge({ dtype }) {
   const isNum = dtype?.includes("int") || dtype?.includes("float");
@@ -229,10 +173,6 @@ function DtypeBadge({ dtype }) {
 
 // ─────────────────────────────────────────
 // Main
-=======
-// ─────────────────────────────────────────
-// Main component
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
 // ─────────────────────────────────────────
 export default function Home() {
   // Layer 1 state
@@ -244,44 +184,11 @@ export default function Home() {
   const [outlierStrategy, setOutlierStrategy] = useState("none");
   const [outlierThreshold, setOutlierThreshold] = useState(3.0);
   const [dropCols, setDropCols] = useState([]);
-<<<<<<< HEAD
   const [logCols, setLogCols] = useState([]);   // ← NEW: 对数变换
-=======
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
-  const [cleanedData, setCleanedData] = useState(null);
-  const [cleanReport, setCleanReport] = useState(null);
-  const [layer1Loading, setLayer1Loading] = useState(false);
-
-  // Layer 2 state
-  const [analysisTypes, setAnalysisTypes] = useState([]);
-  const [selectedVars, setSelectedVars] = useState([]);
-  const [depVar, setDepVar] = useState("");
-  const [indepVars, setIndepVars] = useState([]);
-  const [controlVars, setControlVars] = useState([]);
-  const [entityVar, setEntityVar] = useState("");
-  const [timeVar, setTimeVar] = useState("");
-  const [robustSE, setRobustSE] = useState(false);
-  const [clusterVar, setClusterVar] = useState("");
-  const [analyzeResults, setAnalyzeResults] = useState(null);
-  const [layer2Loading, setLayer2Loading] = useState(false);
-  const [interpret, setInterpret] = useState(false);
-  const [customQ, setCustomQ] = useState("");
-
-  const fileRef = useRef();
-
-<<<<<<< HEAD
-  // ── Upload ──
-=======
-  // ── Layer 1: Upload files ──
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
   async function handleUpload(newFiles) {
     if (!newFiles.length) return;
     const combined = [...uploadedFiles, ...Array.from(newFiles)].slice(0, 5);
     setUploadedFiles(combined);
-<<<<<<< HEAD
-=======
-
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
     const form = new FormData();
     combined.forEach(f => form.append("files", f));
     setLayer1Loading(true);
@@ -296,7 +203,6 @@ export default function Home() {
     setLayer1Loading(false);
   }
 
-<<<<<<< HEAD
   // ── 删除单个文件 ── NEW
   function handleRemoveFile(index) {
     const newFiles = uploadedFiles.filter((_, i) => i !== index);
@@ -320,15 +226,6 @@ export default function Home() {
     setCleanedData(null);
     setCleanReport(null);
 
-=======
-  // ── Layer 1: Merge & Clean ──
-  async function handleClean() {
-    if (!uploadedFiles.length) return;
-    setLayer1Loading(true);
-    setCleanedData(null);
-    setCleanReport(null);
-
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
     const form = new FormData();
     uploadedFiles.forEach(f => form.append("files", f));
     form.append("merge_config", JSON.stringify({
@@ -341,21 +238,7 @@ export default function Home() {
       outlier: outlierStrategy,
       outlier_threshold: outlierThreshold,
       drop_cols: dropCols,
-<<<<<<< HEAD
       log_cols: logCols,   // ← NEW
-=======
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
-    }));
-
-    try {
-      const res = await fetch(`${API_URL}/api/clean/merge-and-clean`, { method: "POST", body: form });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.detail || "清洗失败");
-<<<<<<< HEAD
-      setCleanedData({ data: json.data, columns: json.columns, dtypes: json.dtypes });
-=======
-      setCleanedData({ data: json.data, columns: json.columns });
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
       setCleanReport(json.report);
     } catch (e) {
       alert("清洗失败：" + e.message);
@@ -363,23 +246,13 @@ export default function Home() {
     setLayer1Loading(false);
   }
 
-<<<<<<< HEAD
   // ── Analyze ──
-=======
-  // ── Layer 2: Run analysis ──
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
   async function handleAnalyze() {
     if (!cleanedData) return alert("请先完成数据清洗");
     if (!analysisTypes.length) return alert("请选择至少一种分析方法");
     setLayer2Loading(true);
     setAnalyzeResults(null);
 
-<<<<<<< HEAD
-=======
-    const needsRegression = analysisTypes.some(t => ["ols", "panel_fe", "panel_re"].includes(t));
-    const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re"].includes(t));
-
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
     try {
       const res = await fetch(`${API_URL}/api/analyze/run`, {
         method: "POST",
@@ -410,7 +283,6 @@ export default function Home() {
 
   const allCols = filePreviews.flatMap(f => f.columns);
   const uniqueCols = [...new Set(allCols)];
-<<<<<<< HEAD
   // 只对数值类型列提供对数变换
   const numericColsForLog = filePreviews.length > 0
     ? [...new Set(filePreviews.flatMap(f =>
@@ -421,10 +293,6 @@ export default function Home() {
     : [];
 
   const cleanedCols = cleanedData?.columns || [];
-=======
-  const cleanedCols = cleanedData?.columns || [];
-  const numericCols = cleanedCols; // 简化，后端会只处理数值列
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
   const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re"].includes(t));
   const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re"].includes(t));
 
@@ -436,10 +304,6 @@ export default function Home() {
       </Head>
 
       <div className="app">
-<<<<<<< HEAD
-=======
-        {/* Header */}
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
         <div className="jheader">
           <span className="jname">Empirical Research Platform</span>
           <span className="jmeta">数据清洗 · 统计分析 · 论文规范输出</span>
@@ -451,9 +315,6 @@ export default function Home() {
 
 <<<<<<< HEAD
         {/* ═══ LAYER 1 ═══ */}
-=======
-        {/* ═══════════════ LAYER 1 ═══════════════ */}
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
         <div className="layer-badge">第一层：数据清洗</div>
 
         {/* 1.1 Upload */}
@@ -469,18 +330,13 @@ export default function Home() {
               onChange={e => handleUpload(e.target.files)} />
             <div className="uicon">📂</div>
             <h3>上传数据文件</h3>
-<<<<<<< HEAD
             <p>支持 .csv / .xlsx / .xls / .dta · 可多选 · 拖拽上传</p>
-=======
-            <p>支持 .csv / .xlsx / .xls / .dta · 可多选</p>
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
           </div>
 
           {filePreviews.length > 0 && (
             <div className="file-cards">
               {filePreviews.map((f, i) => (
                 <div key={i} className="file-card">
-<<<<<<< HEAD
                   {/* ← DELETE BUTTON */}
                   <button
                     className="fc-delete"
@@ -498,11 +354,6 @@ export default function Home() {
                       </span>
                     ))}
                   </div>
-=======
-                  <div className="fc-name">📄 {f.filename}</div>
-                  <div className="fc-meta">{f.rows.toLocaleString()} 行 × {f.cols} 列</div>
-                  <div className="fc-cols">{f.columns.join(", ")}</div>
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
                   {Object.entries(f.missing).some(([, v]) => v > 0) && (
                     <div className="fc-missing">
                       缺失：{Object.entries(f.missing).filter(([, v]) => v > 0).map(([k, v]) => `${k}(${v})`).join(", ")}
@@ -540,14 +391,10 @@ export default function Home() {
         {/* 1.3 Clean config */}
         {filePreviews.length > 0 && (
           <div className="section">
-<<<<<<< HEAD
             <div className="sh">
               <span className="sn">{filePreviews.length > 1 ? "03" : "02"}</span>
               <span className="st">清洗配置</span>
             </div>
-=======
-            <div className="sh"><span className="sn">{filePreviews.length > 1 ? "03" : "02"}</span><span className="st">清洗配置</span></div>
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
             <div className="config-grid">
               <div className="config-item">
                 <label className="cfg-label">缺失值处理</label>
@@ -570,7 +417,6 @@ export default function Home() {
                     placeholder={outlierStrategy === "zscore" ? "σ倍数（默认3）" : "IQR倍数（默认1.5）"} />
                 )}
               </div>
-<<<<<<< HEAD
 
               {/* ← 对数变换 NEW */}
               {numericColsForLog.length > 0 && (
@@ -582,44 +428,10 @@ export default function Home() {
                 </div>
               )}
 
-=======
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
-              {uniqueCols.length > 0 && (
-                <div className="config-item" style={{ gridColumn: "1 / -1" }}>
-                  <label className="cfg-label">删除列（可选）</label>
-                  <TagSelector options={uniqueCols} selected={dropCols} onChange={setDropCols} />
-                </div>
-              )}
-            </div>
-
-            <button className="run-btn" onClick={handleClean} disabled={layer1Loading}>
-              {layer1Loading ? "处理中…" : "执行清洗 →"}
-            </button>
-          </div>
-        )}
-
-        {/* 1.4 Clean report */}
-        {cleanReport && (
-          <div className="clean-report">
-            <div className="cr-title">✅ 清洗完成</div>
-            <div className="cr-stats">
-<<<<<<< HEAD
-              <span>{cleanReport.rows_before?.toLocaleString()} 行 → {cleanReport.rows_after?.toLocaleString()} 行</span>
-              <span>处理缺失值 {cleanReport.missing_handled} 个</span>
-              <span>移除异常值 {cleanReport.outliers_removed} 行</span>
-              {cleanReport.log_cols_added?.length > 0 && (
-                <span>新增对数列 {cleanReport.log_cols_added.join(", ")}</span>
-              )}
-=======
-              <span>{cleanReport.rows_before.toLocaleString()} 行 → {cleanReport.rows_after.toLocaleString()} 行</span>
-              <span>处理缺失值 {cleanReport.missing_handled} 个</span>
-              <span>移除异常值 {cleanReport.outliers_removed} 行</span>
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
             </div>
             {cleanReport.steps?.map((s, i) => (
               <div key={i} className="cr-step">• {s.step}：{s.detail}</div>
             ))}
-<<<<<<< HEAD
 
             {/* 清洗后列预览 */}
             {cleanedData?.columns && (
@@ -639,12 +451,6 @@ export default function Home() {
         )}
 
         {/* ═══ LAYER 2 ═══ */}
-=======
-          </div>
-        )}
-
-        {/* ═══════════════ LAYER 2 ═══════════════ */}
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
         {cleanedData && (
           <>
             <hr className="divider" />
@@ -718,15 +524,11 @@ export default function Home() {
                     <span className="vl">标准误</span>
                     <div className="radio-group">
                       {[["conventional","常规SE"],["robust","稳健SE(HC1)"],["cluster","聚类SE"]].map(([v, l]) => (
-<<<<<<< HEAD
                         <label key={v} className={`radio-btn ${
                           (v === "conventional" && !robustSE && !clusterVar) ||
                           (v === "robust" && robustSE && !clusterVar) ||
                           (v === "cluster" && clusterVar) ? "sel" : ""
                         }`}
-=======
-                        <label key={v} className={`radio-btn ${(v === "conventional" && !robustSE && !clusterVar) || (v === "robust" && robustSE && !clusterVar) || (v === "cluster" && clusterVar) ? "sel" : ""}`}
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
                           onClick={() => {
                             if (v === "conventional") { setRobustSE(false); setClusterVar(""); }
                             else if (v === "robust") { setRobustSE(true); setClusterVar(""); }
@@ -827,7 +629,6 @@ export default function Home() {
         .upload-zone h3 { font-family: 'Playfair Display', serif; font-size: 15px; margin-bottom: 4px; }
         .upload-zone p { font-size: 12px; color: #8a8078; font-family: 'IBM Plex Mono', monospace; }
         .file-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 14px; }
-<<<<<<< HEAD
         .file-card { background: #fffef9; border: 1px solid #ddd8cc; border-radius: 8px; padding: 12px 14px; position: relative; }
         /* ── 删除按钮 ── */
         .fc-delete { position: absolute; top: 8px; right: 8px; background: none; border: none; cursor: pointer; font-size: 13px; color: #bbb; line-height: 1; padding: 2px 5px; border-radius: 4px; transition: all 0.15s; }
@@ -840,43 +641,12 @@ export default function Home() {
         .dtype-badge { font-size: 9px; padding: 1px 4px; border-radius: 3px; font-weight: 600; }
         .dtype-badge.num { background: rgba(44,74,138,0.12); color: #2c4a8a; }
         .dtype-badge.str { background: rgba(138,80,44,0.10); color: #8a502c; }
-=======
-        .file-card { background: #fffef9; border: 1px solid #ddd8cc; border-radius: 8px; padding: 12px 14px; }
-        .fc-name { font-size: 12px; font-weight: 600; color: #2c4a8a; margin-bottom: 4px; font-family: 'IBM Plex Mono', monospace; }
-        .fc-meta { font-size: 11px; color: #8a8078; font-family: 'IBM Plex Mono', monospace; margin-bottom: 4px; }
-        .fc-cols { font-size: 11px; color: #5a5a5a; font-family: 'IBM Plex Mono', monospace; line-height: 1.5; }
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
         .fc-missing { font-size: 11px; color: #8a2c2c; margin-top: 4px; font-family: 'IBM Plex Mono', monospace; }
         .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; background: #fffef9; border: 1px solid #ddd8cc; border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; }
         @media (max-width: 600px) { .config-grid { grid-template-columns: 1fr; } }
         .config-item { }
         .cfg-label { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #8a8078; display: block; margin-bottom: 8px; font-family: 'IBM Plex Mono', monospace; text-transform: uppercase; }
-<<<<<<< HEAD
         .cfg-hint { font-size: 10px; color: #bbb; font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 6px; }
-=======
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
-        .radio-group { display: flex; flex-wrap: wrap; gap: 6px; }
-        .radio-btn { font-size: 11px; padding: 4px 10px; border: 1px solid #ddd8cc; border-radius: 4px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; color: #5a5a5a; transition: all 0.15s; user-select: none; }
-        .radio-btn.sel { background: #2c4a8a; color: white; border-color: #2c4a8a; }
-        .radio-btn:hover:not(.sel) { border-color: #2c4a8a; color: #2c4a8a; }
-        .threshold-input { margin-top: 8px; width: 160px; background: #f7f5f0; border: 1px solid #ddd8cc; border-radius: 6px; padding: 5px 10px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; outline: none; }
-        .tag-sel { display: flex; flex-wrap: wrap; gap: 6px; }
-        .vtag { background: #f0ece3; border: 1px solid #ddd8cc; border-radius: 4px; padding: 3px 10px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; cursor: pointer; transition: all 0.15s; user-select: none; }
-        .vtag:hover { border-color: #2c4a8a; color: #2c4a8a; }
-        .vtag.sel { background: #2c4a8a; color: white; border-color: #2c4a8a; }
-        .run-btn { background: #2c4a8a; color: white; border: none; border-radius: 6px; padding: 10px 24px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'IBM Plex Sans', sans-serif; transition: all 0.15s; }
-        .run-btn:hover { background: #1e3a6e; }
-        .run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .clean-report { background: rgba(44,74,138,0.04); border: 1px solid rgba(44,74,138,0.2); border-radius: 8px; padding: 16px 20px; margin-bottom: 24px; }
-        .cr-title { font-weight: 600; color: #2c4a8a; margin-bottom: 8px; font-size: 13px; }
-        .cr-stats { display: flex; gap: 20px; flex-wrap: wrap; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #3a3530; margin-bottom: 8px; }
-        .cr-step { font-size: 12px; color: #5a5a5a; font-family: 'IBM Plex Mono', monospace; line-height: 1.8; }
-<<<<<<< HEAD
-        .cr-cols-preview { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(44,74,138,0.15); }
-        .cr-cols-title { font-size: 11px; font-weight: 700; color: #8a8078; font-family: 'IBM Plex Mono', monospace; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-        .cr-cols-list { display: flex; flex-wrap: wrap; gap: 4px; }
-=======
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
         .divider { border: none; border-top: 2px solid #ddd8cc; margin: 36px 0; }
         .analysis-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
         @media (max-width: 700px) { .analysis-grid { grid-template-columns: 1fr 1fr; } }
