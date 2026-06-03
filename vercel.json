@@ -1,0 +1,18 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "env": {
+    "NEXT_PUBLIC_API_URL": "/"
+  },
+  "functions": {
+    "api/index.py": {
+      "runtime": "@vercel/python@3.0.10",
+      "memory": 512,
+      "maxDuration": 60
+    }
+  },
+  "routes": [
+    { "src": "/api/(clean|analyze|health)/(.*)", "dest": "/api/index.py" },
+    { "src": "/(.*)", "dest": "/$1" }
+  ]
+}

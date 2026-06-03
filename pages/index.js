@@ -136,11 +136,9 @@ function RegressionTable({ data, label }) {
   );
 }
 
-=======
 // ─────────────────────────────────────────
 // Tag selector
 // ─────────────────────────────────────────
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
 function TagSelector({ options, selected, onChange, single }) {
   return (
     <div className="tag-sel">
@@ -175,6 +173,8 @@ function DtypeBadge({ dtype }) {
 // Main
 // ─────────────────────────────────────────
 export default function Home() {
+  const fileRef = useRef(null);
+  
   // Layer 1 state
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [filePreviews, setFilePreviews] = useState([]);
@@ -184,7 +184,26 @@ export default function Home() {
   const [outlierStrategy, setOutlierStrategy] = useState("none");
   const [outlierThreshold, setOutlierThreshold] = useState(3.0);
   const [dropCols, setDropCols] = useState([]);
-  const [logCols, setLogCols] = useState([]);   // ← NEW: 对数变换
+  const [logCols, setLogCols] = useState([]);
+  const [layer1Loading, setLayer1Loading] = useState(false);
+  const [cleanedData, setCleanedData] = useState(null);
+  const [cleanReport, setCleanReport] = useState(null);
+  
+  // Layer 2 state
+  const [analysisTypes, setAnalysisTypes] = useState([]);
+  const [selectedVars, setSelectedVars] = useState([]);
+  const [depVar, setDepVar] = useState("");
+  const [indepVars, setIndepVars] = useState([]);
+  const [controlVars, setControlVars] = useState([]);
+  const [entityVar, setEntityVar] = useState("");
+  const [timeVar, setTimeVar] = useState("");
+  const [robustSE, setRobustSE] = useState(false);
+  const [clusterVar, setClusterVar] = useState("");
+  const [interpret, setInterpret] = useState(false);
+  const [customQ, setCustomQ] = useState("");
+  const [layer2Loading, setLayer2Loading] = useState(false);
+  const [analyzeResults, setAnalyzeResults] = useState(null);
+
   async function handleUpload(newFiles) {
     if (!newFiles.length) return;
     const combined = [...uploadedFiles, ...Array.from(newFiles)].slice(0, 5);
@@ -238,7 +257,14 @@ export default function Home() {
       outlier: outlierStrategy,
       outlier_threshold: outlierThreshold,
       drop_cols: dropCols,
-      log_cols: logCols,   // ← NEW
+      log_cols: logCols,
+    }));
+
+    try {
+      const res = await fetch(`${API_URL}/api/clean/merge-and-clean`, { method: "POST", body: form });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.detail || "清洗失败");
+      setCleanedData(json.data);
       setCleanReport(json.report);
     } catch (e) {
       alert("清洗失败：" + e.message);
@@ -313,8 +339,7 @@ export default function Home() {
           <p className="sub">与 Stata 结果一致 · 两层架构 · 面板数据支持</p>
         </div>
 
-<<<<<<< HEAD
-        {/* ═══ LAYER 1 ═══ */}
+{/* ═══ LAYER 1 ═══ */}
         <div className="layer-badge">第一层：数据清洗</div>
 
         {/* 1.1 Upload */}
@@ -672,10 +697,7 @@ export default function Home() {
         .result-body { padding: 32px; }
         .result-footer { padding: 10px 32px; border-top: 1px solid #ddd8cc; background: #f0ece3; font-size: 11px; color: #8a8078; font-style: italic; font-family: 'Playfair Display', serif; }
         .err-box { color: #8a2c2c; font-family: 'IBM Plex Mono', monospace; font-size: 12px; margin-bottom: 8px; }
-<<<<<<< HEAD
         .omit-notice { background: #fff8e6; border: 1px solid #f0cc6e; border-radius: 5px; padding: 8px 12px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; color: #7a5a00; margin-bottom: 12px; }
-=======
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
         .result-block { margin-bottom: 40px; }
         .result-block + .result-block { padding-top: 32px; border-top: 2px solid #ddd8cc; }
         .tbl-title { font-family: 'Playfair Display', serif; font-size: 15px; font-weight: 600; text-align: center; margin-bottom: 12px; }

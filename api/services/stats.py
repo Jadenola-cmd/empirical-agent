@@ -79,9 +79,6 @@ def run_ols(
         cols_needed.append(cluster_var)
 
     sub = df[cols_needed].dropna().copy()
-=======
-    # 强制转换为数值，非数值变 NaN 后再删除
->>>>>>> b11b39409eb50702ba532cf56bc27e7d379cda26
     for col in cols_needed:
         sub[col] = pd.to_numeric(sub[col], errors="coerce")
     sub = sub.dropna()
@@ -161,8 +158,6 @@ def run_panel(
     y = sub[dep_var]
     X_raw = sub[all_x_vars]
 
-<<<<<<< HEAD
-    # ── 共线性检测：逐列贪心保留，对齐 Stata omit 行为 ──
     dropped = []
     X_arr = X_raw.values.astype(float)
     rank = matrix_rank(X_arr)
@@ -175,10 +170,70 @@ def run_panel(
                 keep.append(col)
             else:
                 dropped.append(col)
-        # 保护：至少保留1个变量，否则整体报错更清晰
         if len(keep) == 0:
             raise ValueError(
                 f"所有解释变量（{all_x_vars}）完全共线，无法估计。"
                 "请检查是否有常数列或变量之间完全线性相关。"
             )
+        X_raw = X_raw[keep]
+
+    if model_type == "fe":
+        model = PanelOLS(y, X_raw, entity_effects=True)
+    else:
+        model = RandomEffects(y, X_raw)
+
+    if cluster_var:
+        res = model.fit(cov_type="clustered", cluster_entity=True)
+        se_type = f"clustered({cluster_var})"
+    elif robust_se:
+        res = model.fit(cov_type="robust")
+        se_type = "robust"
+    else:
+        res = model.fit()
+        se_type = "conventional"
+
+    coefs = []
+    for name in res.params.index:
+        if name == "const":
+            continue
+        p = float(res.pvalues[name])
+        coefs.append({
+            "variable":   name,
+            "coef":       round(float(res.params[name]), 6),
+            "std_error":  round(float(res.bse[name]), 6),
+            "t_stat":     round(float(res.tstats[name]), 4),
+            "p_value":    round(p, 6),
+            "sig":        sig_stars(p),
+        })
+
+    result = {
+        "type":          "panel_" + model_type,
+        "dep_var":       dep_var,
+        "indep_vars":    indep_vars,
+        "control_vars":  control_vars,
+        "entity_var":    entity_var,
+        "time_var":      time_var,
+        "n":             int(res.nobs),
+        "n_groups":      int(res.entity_ids.shape[0]),
+        "se_type":       se_type,
+        "coefficients":  coefs,
+        "dropped_vars":  dropped,
     }
+
+    if model_type == "fe":
+        result.update({
+            "r2_within":  round(float(res.rsquared_within), 6),
+            "r2_between": round(float(res.rsquared_between), 6),
+            "r2_overall": round(float(res.rsquared_overall), 6),
+        })
+    else:
+        result.update({
+            "r2_within":  round(float(res.rsquared_within), 6),
+            "r2_between": round(float(res.rsquared_between), 6),
+            "r2_overall": round(float(res.rsquared_overall), 6),
+            "sigma2_u":   round(float(res.sigma2_u), 6),
+            "sigma2_e":   round(float(res.sigma2_e), 6),
+            "rho":        round(float(res.rho), 6),
+        })
+
+    return result
