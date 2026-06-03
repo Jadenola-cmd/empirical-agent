@@ -1,4 +1,6 @@
 import io
+import os
+import tempfile
 import pandas as pd
 import pyreadstat
 
@@ -10,7 +12,6 @@ def load_file(content: bytes, filename: str) -> pd.DataFrame:
     ext = filename.rsplit(".", 1)[-1].lower()
 
     if ext == "csv":
-        # 自动检测编码
         for encoding in ["utf-8", "gbk", "gb2312", "utf-8-sig"]:
             try:
                 return pd.read_csv(io.BytesIO(content), encoding=encoding)
@@ -22,9 +23,15 @@ def load_file(content: bytes, filename: str) -> pd.DataFrame:
         return pd.read_excel(io.BytesIO(content))
 
     elif ext == "dta":
-        # pyreadstat 读取 Stata DTA 文件
-        with io.BytesIO(content) as buf:
-            df, meta = pyreadstat.read_dta(buf)
+        # pyreadstat 不支持 BytesIO，必须写入临时文件再读取
+        suffix = ".dta"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        try:
+            df, meta = pyreadstat.read_dta(tmp_path)
+        finally:
+            os.unlink(tmp_path)  # 确保临时文件被清理
         return df
 
     else:

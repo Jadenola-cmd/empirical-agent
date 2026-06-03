@@ -1,24 +1,14 @@
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 
 
 def merge_files(dfs: Dict[str, pd.DataFrame], config: Dict[str, Any]) -> pd.DataFrame:
-    """
-    合并多个 DataFrame
-
-    config:
-      strategy: left | inner | outer | concat（纵向堆叠）
-      keys: 合并键列表，如 ["firm_id", "year"]
-      files_order: 文件合并顺序
-    """
     strategy = config.get("strategy", "inner")
     keys = config.get("keys", [])
     files_order = config.get("files_order", list(dfs.keys()))
 
-    # 按指定顺序排列
     ordered = [dfs[f] for f in files_order if f in dfs]
-    # 加入未指定顺序的文件
     for name, df in dfs.items():
         if name not in files_order:
             ordered.append(df)
@@ -27,38 +17,46 @@ def merge_files(dfs: Dict[str, pd.DataFrame], config: Dict[str, Any]) -> pd.Data
         return ordered[0].copy()
 
     if strategy == "concat":
-        # 纵向堆叠（适合同结构数据）
         return pd.concat(ordered, ignore_index=True)
 
-    # 横向合并
     if not keys:
         raise ValueError("横向合并需要指定合并键 keys，如 ['firm_id', 'year']")
 
     result = ordered[0]
     for df in ordered[1:]:
-        # 找出当前两个 df 共有的键
         common_keys = [k for k in keys if k in result.columns and k in df.columns]
         if not common_keys:
             raise ValueError(f"合并键 {keys} 在某个文件中不存在")
         result = result.merge(df, on=common_keys, how=strategy, suffixes=("", "_dup"))
-        # 去掉重复列
         dup_cols = [c for c in result.columns if c.endswith("_dup")]
         result = result.drop(columns=dup_cols)
 
     return result
 
 
-def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict]:
+def apply_log_transform(df: pd.DataFrame, log_cols: List[str]) -> Tuple[pd.DataFrame, List[str]]:
     """
-    数据清洗
+    对指定列做自然对数变换，生成 ln_变量名 新列
+    自动跳过含0或负值的列（用 log(1+x) 处理），并在报告中说明
+    """
+    added = []
+    warnings = []
+    for col in log_cols:
+        if col not in df.columns:
+            continue
+        s = pd.to_numeric(df[col], errors="coerce")
+        new_col = f"ln_{col}"
+        if (s.dropna() <= 0).any():
+            # 有非正值，改用 log(1+x)
+            df[new_col] = np.log1p(s.clip(lower=0))
+            warnings.append(f"{col} 含0或负值，使用 ln(1+x)")
+        else:
+            df[new_col] = np.log(s)
+        added.append(new_col)
+    return df, added, warnings
 
-    config:
-      missing: drop | mean | median | ffill | bfill | zero
-      outlier: none | iqr | zscore
-      outlier_threshold: float（zscore 的 σ 倍数，默认 3；IQR 的倍数，默认 1.5）
-      drop_cols: 删除的列
-      rename_cols: 重命名列 {"old": "new"}
-    """
+
+def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict]:
     df = df.copy()
     report = {
         "rows_before": len(df),
@@ -79,7 +77,17 @@ def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, 
         df = df.rename(columns=rename_cols)
         report["steps"].append({"step": "重命名列", "detail": str(rename_cols)})
 
-    # 3. 缺失值处理
+    # 3. 对数变换（在缺失值处理前执行，保留更多样本）
+    log_cols = config.get("log_cols", [])
+    if log_cols:
+        df, added_cols, log_warnings = apply_log_transform(df, log_cols)
+        detail = f"生成列：{added_cols}"
+        if log_warnings:
+            detail += f"；警告：{'; '.join(log_warnings)}"
+        report["steps"].append({"step": "对数变换", "detail": detail})
+        report["log_cols_added"] = added_cols
+
+    # 4. 缺失值处理
     missing_strategy = config.get("missing", "drop")
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     missing_before = int(df.isnull().sum().sum())
@@ -106,17 +114,18 @@ def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, 
     missing_after = int(df.isnull().sum().sum())
     report["missing_handled"] = missing_before - missing_after
 
-    # 4. 异常值处理
+    # 5. 异常值处理
     outlier_strategy = config.get("outlier", "none")
     threshold = float(config.get("outlier_threshold", 3.0))
     outliers_removed = 0
 
     if outlier_strategy == "zscore" and numeric_cols:
         from scipy import stats
-        z_scores = np.abs(stats.zscore(df[numeric_cols].dropna()))
+        numeric_cols_now = df.select_dtypes(include="number").columns.tolist()
+        z_scores = np.abs(stats.zscore(df[numeric_cols_now].dropna()))
         mask = (z_scores < threshold).all(axis=1)
         rows_before = len(df)
-        df_numeric = df[numeric_cols].dropna()
+        df_numeric = df[numeric_cols_now].dropna()
         valid_idx = df_numeric.index[mask]
         df = df.loc[df.index.isin(valid_idx) | ~df.index.isin(df_numeric.index)]
         outliers_removed = rows_before - len(df)
@@ -126,8 +135,9 @@ def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, 
         })
 
     elif outlier_strategy == "iqr" and numeric_cols:
+        numeric_cols_now = df.select_dtypes(include="number").columns.tolist()
         rows_before = len(df)
-        for col in numeric_cols:
+        for col in numeric_cols_now:
             Q1 = df[col].quantile(0.25)
             Q3 = df[col].quantile(0.75)
             IQR = Q3 - Q1
@@ -148,7 +158,6 @@ def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, 
 
 
 def get_cleaning_report(report: Dict) -> str:
-    """生成清洗摘要文字"""
     lines = [
         f"原始数据：{report['rows_before']} 行 × {report['cols_before']} 列",
         f"清洗后：{report['rows_after']} 行 × {report['cols_after']} 列",
