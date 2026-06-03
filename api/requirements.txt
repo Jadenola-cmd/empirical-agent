@@ -1,0 +1,13 @@
+fastapi==0.111.0
+uvicorn==0.29.0
+python-multipart==0.0.9
+pandas==2.2.2
+numpy==1.26.4
+statsmodels==0.14.2
+linearmodels==5.4
+pyreadstat==1.2.7
+scipy==1.13.0
+pydantic==2.7.1
+python-dotenv==1.0.1
+dashscope==1.19.3
+openpyxl==3.1.2
