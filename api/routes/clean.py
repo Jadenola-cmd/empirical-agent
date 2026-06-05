@@ -3,6 +3,7 @@ from typing import List
 import json
 from services.data_loader import load_file
 from services.cleaner import merge_files, clean_data, check_merge_type
+from services.session_store import save_session, load_session
 
 router = APIRouter()
 
@@ -13,10 +14,12 @@ async def upload_and_preview(files: List[UploadFile] = File(...)):
         raise HTTPException(status_code=400, detail="最多上传5个文件")
 
     previews = []
+    dfs = {}
     for f in files:
         content = await f.read()
         try:
             df = load_file(content, f.filename)
+            dfs[f.filename] = df
             previews.append({
                 "filename": f.filename,
                 "rows": len(df),
@@ -29,12 +32,13 @@ async def upload_and_preview(files: List[UploadFile] = File(...)):
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"{f.filename} 解析失败：{str(e)}")
 
-    return {"files": previews}
+    session_id = save_session(dfs)
+    return {"files": previews, "session_id": session_id}
 
 
 @router.post("/check-merge")
 async def check_merge(
-    files: List[UploadFile] = File(...),
+    files: List[UploadFile] = File(default=[]),
     merge_config: str = Form(...),
 ):
     """
@@ -52,10 +56,17 @@ async def check_merge(
     if not keys:
         return {"ok": True, "type": "no_keys", "details": []}
 
-    dfs = {}
-    for f in files:
-        content = await f.read()
-        dfs[f.filename] = load_file(content, f.filename)
+    session_id = merge_cfg.get("session_id")
+    if session_id:
+        try:
+            dfs = load_session(session_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    else:
+        dfs = {}
+        for f in files:
+            content = await f.read()
+            dfs[f.filename] = load_file(content, f.filename)
 
     result = check_merge_type(dfs, keys, field_maps)
     return result
@@ -63,7 +74,7 @@ async def check_merge(
 
 @router.post("/merge-and-clean")
 async def merge_and_clean(
-    files: List[UploadFile] = File(...),
+    files: List[UploadFile] = File(default=[]),
     merge_config: str = Form(...),
     clean_config: str = Form(...),
 ):
@@ -72,6 +83,7 @@ async def merge_and_clean(
 
     merge_config 新增字段：
       field_maps: {"file1.csv": {"股票代码": "firm_id"}, "file2.csv": {}}
+      session_id: 上传时返回的会话ID，提供后无需重传文件
 
     clean_config 新增字段：
       log_vars: ["sales", "asset"]  → 生成 ln_sales, ln_asset
@@ -82,10 +94,17 @@ async def merge_and_clean(
     except Exception:
         raise HTTPException(status_code=400, detail="配置参数格式错误")
 
-    dfs = {}
-    for f in files:
-        content = await f.read()
-        dfs[f.filename] = load_file(content, f.filename)
+    session_id = merge_cfg.get("session_id")
+    if session_id:
+        try:
+            dfs = load_session(session_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    else:
+        dfs = {}
+        for f in files:
+            content = await f.read()
+            dfs[f.filename] = load_file(content, f.filename)
 
     try:
         merged = merge_files(dfs, merge_cfg)

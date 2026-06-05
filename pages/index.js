@@ -545,6 +545,8 @@ export default function Home() {
   const [cleanPreview, setCleanPreview] = useState(null);
   const [doClean, setDoClean] = useState("");
   const [layer1Loading, setLayer1Loading] = useState(false);
+  const [isCleaning, setIsCleaning] = useState(false);        // true when /merge-and-clean is running
+  const [sessionId, setSessionId] = useState(null);           // server-side file cache session
   const [uploadProgress, setUploadProgress] = useState(null); // null | 0-100
   const [uploadSpeed, setUploadSpeed] = useState(null);       // bytes/s
   const [uploadETA, setUploadETA] = useState(null);           // seconds
@@ -617,6 +619,7 @@ export default function Home() {
       const json = JSON.parse(text);
       if (!json.files) throw new Error(json.detail || "上传失败");
       setFilePreviews(json.files);
+      setSessionId(json.session_id || null);
       setMergeCheck(null);
     } catch (e) { alert("上传失败：" + e.message); }
     setLayer1Loading(false);
@@ -637,6 +640,7 @@ export default function Home() {
     setLogVars([]);
     setFieldMaps(prev => { const n = { ...prev }; delete n[fn]; return n; });
     setMergeCheck(null);
+    setSessionId(null);
     setCleanedData(null);
     setCleanReport(null);
     setCleanPreview(null);
@@ -646,8 +650,13 @@ export default function Home() {
     if (!uploadedFiles.length || !mergeKeys.length) return;
     setMergeCheckLoading(true);
     const form = new FormData();
-    uploadedFiles.forEach(f => form.append("files", f));
-    form.append("merge_config", JSON.stringify({ keys: mergeKeys, field_maps: fieldMaps }));
+    const mergeConfig = { keys: mergeKeys, field_maps: fieldMaps };
+    if (sessionId) {
+      mergeConfig.session_id = sessionId;
+    } else {
+      uploadedFiles.forEach(f => form.append("files", f));
+    }
+    form.append("merge_config", JSON.stringify(mergeConfig));
     try {
       const res = await fetch(`${API_URL}/api/clean/check-merge`, { method: "POST", body: form });
       const json = await res.json();
@@ -659,15 +668,21 @@ export default function Home() {
   async function handleClean() {
     if (!uploadedFiles.length) return;
     setLayer1Loading(true);
+    setIsCleaning(true);
     setCleanedData(null); setCleanReport(null); setCleanPreview(null);
     const form = new FormData();
-    uploadedFiles.forEach(f => form.append("files", f));
-    form.append("merge_config", JSON.stringify({
+    const mergeConfig = {
       strategy: mergeStrategy,
       keys: mergeKeys,
       files_order: uploadedFiles.map(f => f.name),
       field_maps: fieldMaps,
-    }));
+    };
+    if (sessionId) {
+      mergeConfig.session_id = sessionId;
+    } else {
+      uploadedFiles.forEach(f => form.append("files", f));
+    }
+    form.append("merge_config", JSON.stringify(mergeConfig));
     form.append("clean_config", JSON.stringify({
       missing: missingStrategy,
       outlier: outlierStrategy,
@@ -686,6 +701,7 @@ export default function Home() {
       setDoClean(json.do_clean || "");
     } catch (e) { alert("清洗失败：" + e.message); }
     setLayer1Loading(false);
+    setIsCleaning(false);
   }
 
   async function handleAnalyze() {
@@ -761,7 +777,7 @@ export default function Home() {
             <input type="file" ref={fileRef} accept=".csv,.xlsx,.dta" multiple style={{ display: "none" }}
               onChange={e => handleUpload(e.target.files)} />
             <div className="uicon">{layer1Loading ? "⏳" : "📂"}</div>
-            <h3>{layer1Loading ? (uploadProgress < 100 ? "上传中…" : "解析中…") : "上传数据文件"}</h3>
+            <h3>{layer1Loading ? (isCleaning ? "清洗中…" : uploadProgress !== null && uploadProgress < 100 ? "上传中…" : "解析中…") : "上传数据文件"}</h3>
             <p>支持 .csv / .xlsx / .dta · 可多选</p>
           </div>
 
