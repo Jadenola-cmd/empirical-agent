@@ -758,11 +758,11 @@ export default function Home() {
             onClick={() => !layer1Loading && fileRef.current.click()}
             onDragOver={e => e.preventDefault()}
             onDrop={e => { e.preventDefault(); if (!layer1Loading) handleUpload(e.dataTransfer.files); }}>
-            <input type="file" ref={fileRef} accept=".csv,.xlsx,.xls,.dta" multiple style={{ display: "none" }}
+            <input type="file" ref={fileRef} accept=".csv,.xlsx,.dta" multiple style={{ display: "none" }}
               onChange={e => handleUpload(e.target.files)} />
             <div className="uicon">{layer1Loading ? "⏳" : "📂"}</div>
             <h3>{layer1Loading ? (uploadProgress < 100 ? "上传中…" : "解析中…") : "上传数据文件"}</h3>
-            <p>支持 .csv / .xlsx / .xls / .dta · 可多选</p>
+            <p>支持 .csv / .xlsx / .dta · 可多选</p>
           </div>
 
           {uploadProgress !== null && (

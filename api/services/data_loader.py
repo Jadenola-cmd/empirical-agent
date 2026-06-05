@@ -19,7 +19,7 @@ def load_file(content: bytes, filename: str) -> pd.DataFrame:
                 continue
         raise ValueError(f"无法识别 {filename} 的编码格式")
 
-    elif ext in ("xlsx", "xls"):
+    elif ext == "xlsx":
         return pd.read_excel(io.BytesIO(content))
 
     elif ext == "dta":
@@ -35,4 +35,4 @@ def load_file(content: bytes, filename: str) -> pd.DataFrame:
         return df
 
     else:
-        raise ValueError(f"不支持的文件格式：{ext}，请上传 CSV / Excel / DTA 文件")
+        raise ValueError(f"不支持的文件格式：{ext}，请上传 .csv / .xlsx / .dta 文件")

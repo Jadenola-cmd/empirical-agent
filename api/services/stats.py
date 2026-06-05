@@ -308,7 +308,7 @@ def run_panel(
     effective_time_effects = time_effects if model_type == "fe" else False
 
     if model_type == "fe":
-        model = PanelOLS(y, X_fe, entity_effects=True, time_effects=effective_time_effects)
+        model = PanelOLS(y, X_fe, entity_effects=True, time_effects=effective_time_effects, drop_absorbed=True)
         te_suffix = " i.year" if effective_time_effects else ""
         stata_cmd = f"xtreg {dep_var} {' '.join(X_raw.columns.tolist())}{te_suffix}, fe"
     else:
@@ -321,7 +321,7 @@ def run_panel(
     hausman = None
     if model_type == "fe":
         try:
-            fe_h = PanelOLS(y, X_fe, entity_effects=True, time_effects=effective_time_effects).fit(cov_type="unadjusted")
+            fe_h = PanelOLS(y, X_fe, entity_effects=True, time_effects=effective_time_effects, drop_absorbed=True).fit(cov_type="unadjusted")
             re_h = RandomEffects(y, X_re).fit(cov_type="unadjusted")
             b_fe = fe_h.params
             b_re = re_h.params
