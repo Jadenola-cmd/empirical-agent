@@ -24,6 +24,7 @@ class AnalysisRequest(BaseModel):
     cluster_var: Optional[str] = None
     entity_var: Optional[str] = None
     time_var: Optional[str] = None
+    time_effects: Optional[bool] = False
     interpret: Optional[bool] = False
     custom_question: Optional[str] = None
 
@@ -138,6 +139,7 @@ async def run_analysis(req: AnalysisRequest):
                     model_type="fe" if analysis_type == "panel_fe" else "re",
                     robust_se=req.robust_se,
                     cluster_var=req.cluster_var,
+                    time_effects=bool(req.time_effects) if analysis_type == "panel_fe" else False,
                 )
 
         except Exception as e:

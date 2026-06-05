@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import React, { useState, useRef } from "react";
 import Head from "next/head";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -48,13 +48,14 @@ function exportXlsx(analyzeResults, cleanedData) {
     function buildRegSheet(reg, label) {
       if (!reg?.coefficients) return null;
       const isPanel = reg.type === "fe" || reg.type === "re";
+      const dummySet = new Set(reg.dummy_vars || []);
       const cons = reg.coefficients.find(c => c.variable === "_cons");
-      const vars = reg.coefficients.filter(c => c.variable !== "_cons");
+      const mainVars = reg.coefficients.filter(c => c.variable !== "_cons");
       const rows = [];
       rows.push([label, "(1)"]);
       rows.push(["", reg.dep_var]);
       rows.push([]);
-      vars.forEach(c => {
+      mainVars.forEach(c => {
         rows.push([c.variable, `${c.coef.toFixed(3)}${c.sig}`]);
         rows.push(["", `(${c.t_stat.toFixed(2)})`]);
       });
@@ -63,8 +64,8 @@ function exportXlsx(analyzeResults, cleanedData) {
         rows.push(["", `(${cons.t_stat.toFixed(2)})`]);
       }
       rows.push([]);
-      rows.push(["ind FE", isPanel && reg.type === "fe" ? "Yes" : "No"]);
-      rows.push(["year FE", "No"]);
+      (reg.categorical_vars || []).forEach(cv => rows.push([`${cv} 虚拟化`, "Yes"]));
+      rows.push(["时间固定效应", reg.time_effects ? "Yes" : "No"]);
       rows.push(["N", reg.n]);
       if (isPanel) {
         rows.push(["R² (within)", reg.r2_within?.toFixed(3)]);
@@ -85,6 +86,47 @@ function exportXlsx(analyzeResults, cleanedData) {
         rows.push([`注：${reg.dropped_vars.join(", ")} 因完全共线性被自动移除`]);
       }
       return XLSX.utils.aoa_to_sheet(rows);
+    }
+
+    // 并列对比 sheet
+    const regModels = [
+      { key: "ols", label: "OLS", data: r.ols },
+      { key: "panel_fe", label: "固定效应", data: r.panel_fe },
+      { key: "panel_re", label: "随机效应", data: r.panel_re },
+    ].filter(m => m.data?.coefficients?.length);
+    if (regModels.length >= 2) {
+      const allDummies = new Set(regModels.flatMap(m => m.data.dummy_vars || []));
+      const seenV = new Set();
+      const mainVarNames = [];
+      regModels.forEach(m => m.data.coefficients.forEach(c => {
+        if (c.variable !== "_cons" && !allDummies.has(c.variable) && !seenV.has(c.variable)) {
+          seenV.add(c.variable); mainVarNames.push(c.variable);
+        }
+      }));
+      const allCatV = [...new Set(regModels.flatMap(m => m.data.categorical_vars || []))];
+      const hasCons = regModels.some(m => m.data.coefficients.some(c => c.variable === "_cons"));
+      const header = ["", ...regModels.map((m, i) => `(${i+1}) ${m.label}`)];
+      const subHeader = ["dep_var", ...regModels.map(m => m.data.dep_var)];
+      const cmpRows = [header, subHeader, []];
+      function getC(data, v) { return data.coefficients.find(c => c.variable === v); }
+      mainVarNames.forEach(v => {
+        cmpRows.push([v, ...regModels.map(m => { const c = getC(m.data, v); return c ? `${c.coef.toFixed(3)}${c.sig}` : "—"; })]);
+        cmpRows.push(["", ...regModels.map(m => { const c = getC(m.data, v); return c ? `(${c.t_stat.toFixed(2)})` : ""; })]);
+      });
+      if (hasCons) {
+        cmpRows.push(["_cons", ...regModels.map(m => { const c = getC(m.data, "_cons"); return c ? `${c.coef.toFixed(3)}${c.sig}` : "—"; })]);
+        cmpRows.push(["", ...regModels.map(m => { const c = getC(m.data, "_cons"); return c ? `(${c.t_stat.toFixed(2)})` : ""; })]);
+      }
+      cmpRows.push([]);
+      allCatV.forEach(cv => cmpRows.push([`${cv} 虚拟化`, ...regModels.map(m => (m.data.categorical_vars || []).includes(cv) ? "Yes" : "No")]));
+      cmpRows.push(["时间固定效应", ...regModels.map(m => m.data.time_effects ? "Yes" : "No")]);
+      cmpRows.push(["N", ...regModels.map(m => m.data.n)]);
+      if (regModels.some(m => m.data.type === "ols")) cmpRows.push(["R²", ...regModels.map(m => m.data.type === "ols" ? m.data.r2?.toFixed(3) : "—")]);
+      if (regModels.some(m => m.data.type === "fe" || m.data.type === "re")) cmpRows.push(["R² (within)", ...regModels.map(m => (m.data.type === "fe" || m.data.type === "re") ? m.data.r2_within?.toFixed(3) : "—")]);
+      cmpRows.push(["SE 类型", ...regModels.map(m => m.data.se_type)]);
+      cmpRows.push([]);
+      cmpRows.push(["括号内为t值，***p<0.01, **p<0.05, *p<0.1"]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cmpRows), "回归对比");
     }
 
     if (r.ols) { const ws = buildRegSheet(r.ols, "OLS 回归结果"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "OLS"); }
@@ -262,11 +304,25 @@ function CorrelationTable({ data }) {
   );
 }
 
-function RegressionTable({ data, label }) {
+function RegressionTable({ data, label, bracketMode = "t" }) {
   if (!data?.coefficients?.length) return null;
+  const dummySet = new Set(data.dummy_vars || []);
   const cons = data.coefficients.find(c => c.variable === "_cons");
-  const vars = data.coefficients.filter(c => c.variable !== "_cons");
+  const mainVars = data.coefficients.filter(c => c.variable !== "_cons" && !dummySet.has(c.variable));
+  const dummyVars = data.coefficients.filter(c => dummySet.has(c.variable));
   const isPanel = data.type === "fe" || data.type === "re";
+  const catVars = data.categorical_vars || [];
+
+  function renderCoefCell(c) {
+    const bracket = bracketMode === "se" ? c.std_error?.toFixed(3) : c.t_stat?.toFixed(2);
+    return (
+      <td className="col-reg">
+        <div>{c.coef.toFixed(3)}<sup className="sig">{c.sig}</sup></div>
+        <div className="tval">({bracket})</div>
+      </td>
+    );
+  }
+
   return (
     <div className="result-block">
       <div className="tbl-title">{label || "回归结果"}</div>
@@ -279,26 +335,31 @@ function RegressionTable({ data, label }) {
           <th className="col-reg">(1)<br /><span className="depvar">{data.dep_var}</span></th>
         </tr></thead>
         <tbody>
-          {vars.map((c, i) => (
+          {mainVars.map((c, i) => (
             <tr key={i}>
               <td className="col-var">{c.variable}</td>
-              <td className="col-reg">
-                <div>{c.coef.toFixed(3)}<sup className="sig">{c.sig}</sup></div>
-                <div className="tval">({c.t_stat.toFixed(2)})</div>
-              </td>
+              {renderCoefCell(c)}
+            </tr>
+          ))}
+          {dummyVars.map((c, i) => (
+            <tr key={"d" + i} className="dummy-coef-row">
+              <td className="col-var">{c.variable}</td>
+              {renderCoefCell(c)}
             </tr>
           ))}
           {cons && (
             <tr>
               <td className="col-var">_cons</td>
-              <td className="col-reg">
-                <div>{cons.coef.toFixed(3)}<sup className="sig">{cons.sig}</sup></div>
-                <div className="tval">({cons.t_stat.toFixed(2)})</div>
-              </td>
+              {renderCoefCell(cons)}
             </tr>
           )}
-          <tr className="fe-row"><td className="col-var">ind FE</td><td className="col-reg">{isPanel && data.type === "fe" ? "Yes" : "No"}</td></tr>
-          <tr className="fe-row"><td className="col-var">year FE</td><td className="col-reg">No</td></tr>
+          {catVars.map(cv => (
+            <tr key={"cat_" + cv} className="fe-row">
+              <td className="col-var">{cv} 虚拟化</td>
+              <td className="col-reg">Yes</td>
+            </tr>
+          ))}
+          <tr className="fe-row"><td className="col-var">时间固定效应</td><td className="col-reg">{data.time_effects ? "Yes" : "No"}</td></tr>
           <tr className="stat-row"><td className="col-var">N</td><td className="col-reg">{data.n?.toLocaleString()}</td></tr>
           {isPanel ? (
             <>
@@ -321,6 +382,119 @@ function RegressionTable({ data, label }) {
         </div>
       )}
       <div className="tbl-note">{data.notes}</div>
+    </div>
+  );
+}
+
+function CompareTable({ results }) {
+  const [bracketMode, setBracketMode] = useState("t");
+
+  const modelDefs = [
+    { key: "ols",      label: "OLS" },
+    { key: "panel_fe", label: "固定效应" },
+    { key: "panel_re", label: "随机效应" },
+  ];
+  const models = modelDefs.filter(m => results?.[m.key]?.coefficients?.length).map(m => ({ ...m, data: results[m.key] }));
+  if (models.length < 2) return null;
+
+  // Collect main variable names (excluding dummy vars and _cons)
+  const dummySets = models.map(m => new Set(m.data.dummy_vars || []));
+  const seenVars = new Set();
+  const mainVars = [];
+  for (const { data } of models) {
+    for (const c of data.coefficients) {
+      if (c.variable === "_cons") continue;
+      const isDummy = models.some(m => (m.data.dummy_vars || []).includes(c.variable));
+      if (!isDummy && !seenVars.has(c.variable)) {
+        seenVars.add(c.variable);
+        mainVars.push(c.variable);
+      }
+    }
+  }
+  const hasCons = models.some(m => m.data.coefficients.some(c => c.variable === "_cons"));
+  const allCatVars = [...new Set(models.flatMap(m => m.data.categorical_vars || []))];
+
+  function getCoef(modelData, varName) {
+    return modelData.coefficients.find(c => c.variable === varName);
+  }
+  function renderCell(coef) {
+    if (!coef) return <td className="col-reg compare-cell">—</td>;
+    const bracket = bracketMode === "se" ? coef.std_error?.toFixed(3) : coef.t_stat?.toFixed(2);
+    return (
+      <td className="col-reg compare-cell">
+        <div>{coef.coef.toFixed(3)}<sup className="sig">{coef.sig}</sup></div>
+        <div className="tval">({bracket})</div>
+      </td>
+    );
+  }
+
+  return (
+    <div className="result-block">
+      <div className="tbl-title-row">
+        <span className="tbl-title">回归结果对比</span>
+        <span className="bracket-toggle">
+          括号内：
+          <button className={`btn-tog ${bracketMode === "t" ? "active" : ""}`} onClick={() => setBracketMode("t")}>t 值</button>
+          <button className={`btn-tog ${bracketMode === "se" ? "active" : ""}`} onClick={() => setBracketMode("se")}>标准误</button>
+        </span>
+      </div>
+      <div className="tbl-scroll">
+        <table className="acad-table reg-tbl compare-tbl">
+          <thead><tr>
+            <th className="col-var"></th>
+            {models.map((m, i) => (
+              <th key={m.key} className="col-reg">
+                ({i + 1}) {m.label}<br /><span className="depvar">{m.data.dep_var}</span>
+              </th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {mainVars.map(v => (
+              <tr key={v}>
+                <td className="col-var">{v}</td>
+                {models.map(m => <React.Fragment key={m.key}>{renderCell(getCoef(m.data, v))}</React.Fragment>)}
+              </tr>
+            ))}
+            {hasCons && (
+              <tr>
+                <td className="col-var">_cons</td>
+                {models.map(m => <React.Fragment key={m.key}>{renderCell(getCoef(m.data, "_cons"))}</React.Fragment>)}
+              </tr>
+            )}
+            {allCatVars.map(cv => (
+              <tr key={"cat_" + cv} className="fe-row">
+                <td className="col-var">{cv} 虚拟化</td>
+                {models.map(m => <td key={m.key} className="col-reg">{(m.data.categorical_vars || []).includes(cv) ? "Yes" : "No"}</td>)}
+              </tr>
+            ))}
+            <tr className="fe-row">
+              <td className="col-var">时间固定效应</td>
+              {models.map(m => <td key={m.key} className="col-reg">{m.data.time_effects ? "Yes" : "No"}</td>)}
+            </tr>
+            <tr className="stat-row">
+              <td className="col-var">N</td>
+              {models.map(m => <td key={m.key} className="col-reg">{m.data.n?.toLocaleString()}</td>)}
+            </tr>
+            {models.some(m => m.data.type === "ols") && (
+              <tr className="stat-row">
+                <td className="col-var">R²</td>
+                {models.map(m => <td key={m.key} className="col-reg">{m.data.type === "ols" ? m.data.r2?.toFixed(3) : "—"}</td>)}
+              </tr>
+            )}
+            {models.some(m => m.data.type === "fe" || m.data.type === "re") && (
+              <tr className="stat-row">
+                <td className="col-var">R² (within)</td>
+                {models.map(m => <td key={m.key} className="col-reg">{(m.data.type === "fe" || m.data.type === "re") ? m.data.r2_within?.toFixed(3) : "—"}</td>)}
+              </tr>
+            )}
+            <tr className="stat-row">
+              <td className="col-var">SE 类型</td>
+              {models.map(m => <td key={m.key} className="col-reg">{m.data.se_type}</td>)}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="tbl-note">括号内为{bracketMode === "t" ? "t 值" : "标准误"}，***p&lt;0.01, **p&lt;0.05, *p&lt;0.1</div>
     </div>
   );
 }
@@ -384,6 +558,7 @@ export default function Home() {
   const [timeVar, setTimeVar] = useState("");
   const [robustSE, setRobustSE] = useState(false);
   const [clusterVar, setClusterVar] = useState("");
+  const [timeEffects, setTimeEffects] = useState(false);
   const [analyzeResults, setAnalyzeResults] = useState(null);
   const [doAnalyze, setDoAnalyze] = useState("");
   const [layer2Loading, setLayer2Loading] = useState(false);
@@ -531,6 +706,7 @@ export default function Home() {
           control_vars: controlVars.length ? controlVars : null,
           entity_var: entityVar || null,
           time_var: timeVar || null,
+          time_effects: timeEffects,
           robust_se: robustSE,
           cluster_var: clusterVar || null,
           interpret,
@@ -842,6 +1018,14 @@ export default function Home() {
                         );
                       })()}
                     </div>
+                    {analysisTypes.includes("panel_fe") && (
+                      <div className="var-row">
+                        <span className="vl">时间固定效应 <span className="vh">双向FE，对应 Stata xtreg, fe absorb(year) / i.year，仅对固定效应模型生效</span></span>
+                        <label className={`radio-btn ${timeEffects ? "sel" : ""}`} onClick={() => setTimeEffects(v => !v)}>
+                          {timeEffects ? "✓ 开启（双向FE）" : "关闭（仅个体FE）"}
+                        </label>
+                      </div>
+                    )}
                   </>
                 )}
                 {needsReg && (
@@ -914,6 +1098,7 @@ export default function Home() {
                     ))}
                     {analyzeResults.results?.descriptive && <DescriptiveTable data={analyzeResults.results.descriptive} />}
                     {analyzeResults.results?.correlation && <CorrelationTable data={analyzeResults.results.correlation} />}
+                    <CompareTable results={analyzeResults.results} />
                     {analyzeResults.results?.ols && <RegressionTable data={analyzeResults.results.ols} label="OLS 回归结果" />}
                     {analyzeResults.results?.panel_fe && <RegressionTable data={analyzeResults.results.panel_fe} label="固定效应回归（xtreg, fe）" />}
                     {analyzeResults.results?.panel_re && <RegressionTable data={analyzeResults.results.panel_re} label="随机效应回归（xtreg, re）" />}
@@ -1086,7 +1271,14 @@ export default function Home() {
         .fe-row:first-of-type td { border-top: 2px solid #ddd8cc; }
         .stat-row td { font-size: 11px; font-weight: 500; }
         .stat-row:first-of-type td { border-top: 1px solid #ddd8cc; }
+        .dummy-coef-row td { font-size: 11px; color: #7a7060; }
         .hausman-box { background: rgba(44,74,138,0.04); border: 1px solid rgba(44,74,138,0.2); border-radius: 6px; padding: 10px 14px; margin-top: 12px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; color: #3a3530; line-height: 1.8; }
+        .tbl-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+        .bracket-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #5a5a5a; font-family: 'IBM Plex Mono', monospace; }
+        .btn-tog { background: none; border: 1px solid #ccc8c0; border-radius: 3px; padding: 2px 10px; font-size: 11px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; color: #5a5a5a; }
+        .btn-tog.active { background: #2c4a8a; border-color: #2c4a8a; color: white; }
+        .compare-tbl .col-reg { min-width: 100px; }
+        .compare-cell { text-align: center; }
         .interp-result { margin-top: 32px; padding-top: 24px; border-top: 2px solid #ddd8cc; }
         .ir-title { font-family: 'Playfair Display', serif; font-size: 15px; font-weight: 600; margin-bottom: 12px; }
         .ir-text { font-size: 14px; line-height: 1.9; color: #3a3530; }

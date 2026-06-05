@@ -12,6 +12,28 @@ def sig_stars(p: float) -> str:
     return ""
 
 
+def _expand_categoricals(sub: pd.DataFrame, x_vars: List[str]) -> tuple:
+    """Auto-expand object-dtype x vars to dummies, equivalent to Stata's xi: prefix.
+    Returns (updated_sub, new_x_vars, dummy_info) where dummy_info maps
+    original_var -> [generated_dummy_col_names].
+    """
+    cat_cols = [c for c in x_vars if c in sub.columns and pd.api.types.is_object_dtype(sub[c])]
+    if not cat_cols:
+        return sub, list(x_vars), {}
+
+    dummy_info = {}
+    for cv in cat_cols:
+        d = pd.get_dummies(sub[cv], prefix=cv, drop_first=True).astype(float)
+        sub = pd.concat([sub.drop(columns=[cv]), d], axis=1)
+        dummy_info[cv] = list(d.columns)
+
+    new_x = []
+    for v in x_vars:
+        new_x.extend(dummy_info[v] if v in dummy_info else [v])
+
+    return sub, new_x, dummy_info
+
+
 def run_descriptive(df: pd.DataFrame, numeric_cols: List[str]) -> Dict:
     result = []
     for col in numeric_cols:
@@ -74,21 +96,31 @@ def run_ols(
     cluster_var: Optional[str] = None,
 ) -> Dict:
     all_x_vars = indep_vars + control_vars
-    cols_needed = [dep_var] + all_x_vars
-    if cluster_var:
+    # Deduplicate to prevent duplicate-column DataFrame bug
+    cols_needed = list(dict.fromkeys([dep_var] + all_x_vars))
+    if cluster_var and cluster_var not in cols_needed:
         cols_needed.append(cluster_var)
 
-    sub = df[cols_needed].dropna().copy()
-    # 只对 dep_var 和 x 变量做数值转换，cluster_var 保持原样
+    sub = df[cols_needed].copy()
+
+    # Convert numeric cols; skip object-dtype cols (they'll be dummified)
     for col in [dep_var] + all_x_vars:
-        sub[col] = pd.to_numeric(sub[col], errors="coerce")
-    sub = sub.dropna()
+        if col in sub.columns and not pd.api.types.is_object_dtype(sub[col]):
+            sub[col] = pd.to_numeric(sub[col], errors="coerce")
+
+    # Expand categorical x vars to dummies (Stata xi: equivalent)
+    sub, all_x_vars_final, dummy_info = _expand_categoricals(sub, all_x_vars)
+
+    dropna_cols = [dep_var] + all_x_vars_final
+    if cluster_var:
+        dropna_cols.append(cluster_var)
+    sub = sub.dropna(subset=list(dict.fromkeys(dropna_cols)))
 
     if len(sub) == 0:
         raise ValueError("转换为数值后数据为空，请检查变量是否为数值类型")
 
     y = sub[dep_var]
-    X = sm.add_constant(sub[all_x_vars], has_constant="add")
+    X = sm.add_constant(sub[all_x_vars_final], has_constant="add")
 
     model = sm.OLS(y, X)
 
@@ -117,21 +149,30 @@ def run_ols(
             "ci_upper":   round(float(res.conf_int().loc[name, 1]), 6),
         })
 
+    dummy_vars_flat = [col for cols in dummy_info.values() for col in cols]
+    cat_note = (
+        f"；{list(dummy_info.keys())} 已自动展开为虚拟变量（drop_first=True，对齐 Stata xi:）"
+        if dummy_info else ""
+    )
+
     return {
-        "type":         "ols",
-        "dep_var":      dep_var,
-        "indep_vars":   indep_vars,
-        "control_vars": control_vars,
-        "n":            int(res.nobs),
-        "r2":           round(float(res.rsquared), 6),
-        "r2_adj":       round(float(res.rsquared_adj), 6),
-        "f_stat":       round(float(res.fvalue), 4) if res.fvalue else None,
-        "f_pvalue":     round(float(res.f_pvalue), 6) if res.f_pvalue else None,
-        "df_model":     int(res.df_model),
-        "df_resid":     int(res.df_resid),
-        "se_type":      se_type,
-        "coefficients": coefs,
-        "notes":        f"括号内为t值，{se_type}标准误，***p<0.01, **p<0.05, *p<0.1",
+        "type":            "ols",
+        "dep_var":         dep_var,
+        "indep_vars":      indep_vars,
+        "control_vars":    control_vars,
+        "n":               int(res.nobs),
+        "r2":              round(float(res.rsquared), 6),
+        "r2_adj":          round(float(res.rsquared_adj), 6),
+        "f_stat":          round(float(res.fvalue), 4) if res.fvalue else None,
+        "f_pvalue":        round(float(res.f_pvalue), 6) if res.f_pvalue else None,
+        "df_model":        int(res.df_model),
+        "df_resid":        int(res.df_resid),
+        "se_type":         se_type,
+        "coefficients":    coefs,
+        "categorical_vars": list(dummy_info.keys()),
+        "dummy_vars":      dummy_vars_flat,
+        "time_effects":    False,
+        "notes":           f"括号内为t值，{se_type}标准误，***p<0.01, **p<0.05, *p<0.1{cat_note}",
     }
 
 
@@ -145,20 +186,30 @@ def run_panel(
     model_type: str = "fe",
     robust_se: bool = False,
     cluster_var: Optional[str] = None,
+    time_effects: bool = False,
 ) -> Dict:
     from linearmodels.panel import PanelOLS, RandomEffects
     from numpy.linalg import matrix_rank
 
-    all_x_vars = indep_vars + control_vars
-    cols_needed = [dep_var, entity_var, time_var] + all_x_vars
+    # entity_var / time_var 已作为面板索引，不能同时作为回归变量（会产生重复列）
+    all_x_vars = [v for v in (indep_vars + control_vars) if v not in (entity_var, time_var)]
+    if not all_x_vars:
+        raise ValueError(
+            "去除个体/时间索引变量后解释变量为空。"
+            f"请勿将个体变量（{entity_var}）或时间变量（{time_var}）选为解释变量。"
+        )
+
+    # 去重，避免重复列名导致 sub[col] 返回 DataFrame 而非 Series
+    cols_needed = list(dict.fromkeys([dep_var, entity_var, time_var] + all_x_vars))
     if cluster_var and cluster_var not in cols_needed:
         cols_needed.append(cluster_var)
 
     sub = df[cols_needed].copy()
 
-    # entity_var 保持字符串（股票代码前导零不能被 to_numeric 吃掉）
+    # Convert numeric cols; skip object-dtype cols (dummified later)
     for col in [dep_var] + all_x_vars:
-        sub[col] = pd.to_numeric(sub[col], errors="coerce")
+        if not pd.api.types.is_object_dtype(sub[col]):
+            sub[col] = pd.to_numeric(sub[col], errors="coerce")
     sub[entity_var] = sub[entity_var].astype(str).str.strip()
 
     # 时间变量：先尝试直接数值化；若全部失败（如"2020-12-31"日期字符串），则解析为日期后提取年份
@@ -191,6 +242,9 @@ def run_panel(
             )
         raise ValueError(f"有效数据为空（共 {total_rows} 行），请检查变量选择和缺失值情况")
 
+    # Expand categorical x vars to dummies (after dropna, no NaN in cat cols)
+    sub, all_x_vars_final, dummy_info = _expand_categoricals(sub, all_x_vars)
+
     # 检查面板结构
     n_entities = sub[entity_var].nunique()
     n_times = sub[time_var].nunique()
@@ -201,7 +255,7 @@ def run_panel(
 
     sub = sub.set_index([entity_var, time_var])
     y = sub[dep_var]
-    X_raw = sub[all_x_vars]
+    X_raw = sub[all_x_vars_final]
 
     # ── 共线性检测 ──
     dropped = []
@@ -228,11 +282,10 @@ def run_panel(
     except Exception as e:
         raise ValueError(f"共线性检测失败：{str(e)}")
 
-    # Bug1 Fix: FE 的个体效应已充当截距，不需要也不能再加常数项；RE 需要常数项
+    # FE 不加常数项；RE 需要常数项
     X_fe = X_raw
     X_re = sm.add_constant(X_raw, has_constant="add")
 
-    # Bug2 Fix: 正确处理 cluster_var，而非硬编码 cluster_entity=True
     if cluster_var:
         cov_type = "clustered"
         if cluster_var == entity_var:
@@ -251,21 +304,24 @@ def run_panel(
         cov_type = "unadjusted"
         cov_kwds = {}
 
+    # time_effects 仅对 FE 生效（对应 Stata xtreg, fe absorb(year) / i.year）
+    effective_time_effects = time_effects if model_type == "fe" else False
+
     if model_type == "fe":
-        model = PanelOLS(y, X_fe, entity_effects=True, time_effects=False)
-        stata_cmd = f"xtreg {dep_var} {' '.join(X_raw.columns.tolist())}, fe"
+        model = PanelOLS(y, X_fe, entity_effects=True, time_effects=effective_time_effects)
+        te_suffix = " i.year" if effective_time_effects else ""
+        stata_cmd = f"xtreg {dep_var} {' '.join(X_raw.columns.tolist())}{te_suffix}, fe"
     else:
         model = RandomEffects(y, X_re)
         stata_cmd = f"xtreg {dep_var} {' '.join(X_raw.columns.tolist())}, re"
 
     res = model.fit(cov_type=cov_type, **cov_kwds)
 
-    # Hausman 检验
-    # Bug4 Fix: 检验必须用 unadjusted 协方差，与用户选择的 SE 类型无关
+    # Hausman 检验（内部强制用 unadjusted，与用户 SE 类型解耦）
     hausman = None
     if model_type == "fe":
         try:
-            fe_h = PanelOLS(y, X_fe, entity_effects=True, time_effects=False).fit(cov_type="unadjusted")
+            fe_h = PanelOLS(y, X_fe, entity_effects=True, time_effects=effective_time_effects).fit(cov_type="unadjusted")
             re_h = RandomEffects(y, X_re).fit(cov_type="unadjusted")
             b_fe = fe_h.params
             b_re = re_h.params
@@ -298,9 +354,13 @@ def run_panel(
             "sig":       sig_stars(p),
         })
 
-    omit_note = ""
-    if dropped:
-        omit_note = f"注：{dropped} 因完全共线性被自动省略（omitted），与 Stata 处理一致。"
+    dummy_vars_flat = [c for cols in dummy_info.values() for c in cols if c not in dropped]
+
+    omit_note = f"注：{dropped} 因完全共线性被自动省略（omitted），与 Stata 处理一致。" if dropped else ""
+    cat_note = (
+        f"；{list(dummy_info.keys())} 已自动展开为虚拟变量（drop_first=True，对齐 Stata xi:）"
+        if dummy_info else ""
+    )
 
     return {
         "type":             model_type,
@@ -309,6 +369,7 @@ def run_panel(
         "control_vars":     control_vars,
         "entity_var":       entity_var,
         "time_var":         time_var,
+        "time_effects":     effective_time_effects,
         "n":                int(res.nobs),
         "n_entities":       n_entities,
         "r2_within":        round(float(res.rsquared_within), 6) if hasattr(res, "rsquared_within") else None,
@@ -321,5 +382,7 @@ def run_panel(
         "hausman":          hausman,
         "stata_equivalent": stata_cmd,
         "dropped_vars":     dropped,
-        "notes": f"括号内为t值，{cov_type}标准误，***p<0.01, **p<0.05, *p<0.1。{omit_note}",
+        "categorical_vars": list(dummy_info.keys()),
+        "dummy_vars":       dummy_vars_flat,
+        "notes":            f"括号内为t值，{cov_type}标准误，***p<0.01, **p<0.05, *p<0.1。{omit_note}{cat_note}",
     }
