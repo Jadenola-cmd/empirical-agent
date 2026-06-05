@@ -6,7 +6,7 @@
 # ═══════════════════════════════════════════════
 
 # ── 按服务器情况修改这一行 ─────────────────────
-APP_DIR="/www/wwwroot/empirical-agent"
+APP_DIR="/www/empirical-agent"
 # PUBLIC_IP 从环境变量读取，首次使用请在服务器执行：
 #   echo 'export PUBLIC_IP=你的公网IP' >> ~/.bashrc && source ~/.bashrc
 PUBLIC_IP="${PUBLIC_IP:?'请先设置环境变量 PUBLIC_IP，执行：echo export PUBLIC_IP=你的公网IP >> ~/.bashrc && source ~/.bashrc'}"
