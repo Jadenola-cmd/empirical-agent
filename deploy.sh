@@ -79,7 +79,7 @@ if ! $BACKEND_CHANGED && ! $FRONTEND_CHANGED; then
     echo "   无变更，无需重启"
 else
     $BACKEND_CHANGED  && { echo "   重启后端...";  pm2 restart empirical-api;      }
-    $FRONTEND_CHANGED && { echo "   重启前端...";  pm2 restart empirical-frontend;  }
+    $FRONTEND_CHANGED && { echo "   重启前端...";  pm2 restart empirical-web;  }
 fi
 
 echo ""
