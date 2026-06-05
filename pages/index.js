@@ -763,6 +763,7 @@ export default function Home() {
                           onClick={() => {
                             if (v === "conventional") { setRobustSE(false); setClusterVar(""); }
                             else if (v === "robust") { setRobustSE(true); setClusterVar(""); }
+                            else if (v === "cluster") { setRobustSE(false); }
                           }}>{l}</label>
                       ))}
                     </div>

@@ -85,7 +85,14 @@ async def run_analysis(req: AnalysisRequest):
         missing_cols = [v for v in req.variables if v not in df.columns]
         if missing_cols:
             raise HTTPException(status_code=400, detail=f"变量不存在：{missing_cols}")
-        df = df[req.variables]
+        # Bug3 Fix: 面板分析必须保留 entity_var / time_var，即使用户没有在 variables 里选它们
+        keep = list(req.variables)
+        if any(t in req.analysis_types for t in ("panel_fe", "panel_re")):
+            if req.entity_var and req.entity_var not in keep:
+                keep.append(req.entity_var)
+            if req.time_var and req.time_var not in keep:
+                keep.append(req.time_var)
+        df = df[keep]
 
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
 

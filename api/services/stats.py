@@ -207,11 +207,22 @@ def run_panel(
     except Exception as e:
         raise ValueError(f"共线性检测失败：{str(e)}")
 
-    X = sm.add_constant(X_raw, has_constant="add")
+    # Bug1 Fix: FE 的个体效应已充当截距，不需要也不能再加常数项；RE 需要常数项
+    X_fe = X_raw
+    X_re = sm.add_constant(X_raw, has_constant="add")
 
+    # Bug2 Fix: 正确处理 cluster_var，而非硬编码 cluster_entity=True
     if cluster_var:
         cov_type = "clustered"
-        cov_kwds = {"cluster_entity": True}
+        if cluster_var == entity_var:
+            cov_kwds = {"cluster_entity": True}
+        elif cluster_var == time_var:
+            cov_kwds = {"cluster_time": True}
+        else:
+            raise ValueError(
+                f"面板模型仅支持按个体变量（'{entity_var}'）或时间变量（'{time_var}'）聚类，"
+                f"暂不支持按任意变量 '{cluster_var}' 聚类。"
+            )
     elif robust_se:
         cov_type = "robust"
         cov_kwds = {}
@@ -220,26 +231,27 @@ def run_panel(
         cov_kwds = {}
 
     if model_type == "fe":
-        model = PanelOLS(y, X, entity_effects=True, time_effects=False)
+        model = PanelOLS(y, X_fe, entity_effects=True, time_effects=False)
         stata_cmd = f"xtreg {dep_var} {' '.join(X_raw.columns.tolist())}, fe"
     else:
-        model = RandomEffects(y, X)
+        model = RandomEffects(y, X_re)
         stata_cmd = f"xtreg {dep_var} {' '.join(X_raw.columns.tolist())}, re"
 
     res = model.fit(cov_type=cov_type, check_rank=False, **cov_kwds)
 
     # Hausman 检验
+    # Bug4 Fix: 检验必须用 unadjusted 协方差，与用户选择的 SE 类型无关
     hausman = None
     if model_type == "fe":
         try:
-            re_model = RandomEffects(y, X)
-            re_res = re_model.fit(cov_type="unadjusted")
-            b_fe = res.params
-            b_re = re_res.params
+            fe_h = PanelOLS(y, X_fe, entity_effects=True, time_effects=False).fit(cov_type="unadjusted")
+            re_h = RandomEffects(y, X_re).fit(cov_type="unadjusted")
+            b_fe = fe_h.params
+            b_re = re_h.params
             common = b_fe.index.intersection(b_re.index)
             diff = b_fe[common] - b_re[common]
-            var_fe = pd.DataFrame(res.cov, index=res.params.index, columns=res.params.index)
-            var_re = pd.DataFrame(re_res.cov, index=re_res.params.index, columns=re_res.params.index)
+            var_fe = pd.DataFrame(fe_h.cov, index=fe_h.params.index, columns=fe_h.params.index)
+            var_re = pd.DataFrame(re_h.cov, index=re_h.params.index, columns=re_h.params.index)
             V = var_fe.loc[common, common] - var_re.loc[common, common]
             chi2 = float(diff @ np.linalg.pinv(V.values) @ diff)
             df_h = len(common)
