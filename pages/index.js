@@ -325,7 +325,18 @@ function RegressionTable({ data, label }) {
   );
 }
 
-function TagSelector({ options, selected, onChange, single }) {
+function TagSelector({ options, selected, onChange, single, dtypes }) {
+  function dtBadge(col) {
+    if (!dtypes) return null;
+    const t = dtypes[col] || "";
+    if (t.startsWith("float"))    return <span className="dt-badge dt-num">float</span>;
+    if (t.startsWith("int"))      return <span className="dt-badge dt-int">int</span>;
+    if (t.startsWith("datetime")) return <span className="dt-badge dt-date">日期</span>;
+    if (t === "object" || t.startsWith("string")) return <span className="dt-badge dt-str">文本</span>;
+    if (t.startsWith("bool"))     return <span className="dt-badge dt-bool">bool</span>;
+    if (t) return <span className="dt-badge dt-other">{t.split("[")[0]}</span>;
+    return null;
+  }
   return (
     <div className="tag-sel">
       {options.map(opt => (
@@ -333,7 +344,7 @@ function TagSelector({ options, selected, onChange, single }) {
           onClick={() => {
             if (single) onChange(selected.includes(opt) ? [] : [opt]);
             else onChange(selected.includes(opt) ? selected.filter(v => v !== opt) : [...selected, opt]);
-          }}>{opt}</span>
+          }}>{opt}{dtBadge(opt)}</span>
       ))}
     </div>
   );
@@ -450,7 +461,7 @@ export default function Home() {
       const res = await fetch(`${API_URL}/api/clean/merge-and-clean`, { method: "POST", body: form });
       const json = await res.json();
       if (!res.ok) throw new Error(json.detail || "清洗失败");
-      setCleanedData({ data: json.data, columns: json.columns });
+      setCleanedData({ data: json.data, columns: json.columns, dtypes: json.dtypes || {} });
       setCleanReport(json.report);
       setCleanPreview(json.preview);
       setDoClean(json.do_clean || "");
@@ -723,33 +734,43 @@ export default function Home() {
               <div className="var-box">
                 <div className="var-row">
                   <span className="vl">参与分析的变量 <span className="vh">不选=全部数值列</span></span>
-                  <TagSelector options={cleanedCols} selected={selectedVars} onChange={setSelectedVars} />
+                  <TagSelector options={cleanedCols} selected={selectedVars} onChange={setSelectedVars} dtypes={cleanedData?.dtypes} />
                 </div>
                 {needsReg && (
                   <>
                     <div className="var-row">
                       <span className="vl">被解释变量 Y</span>
-                      <TagSelector options={cleanedCols} selected={depVar ? [depVar] : []} onChange={v => setDepVar(v[0] || "")} single />
+                      <TagSelector options={cleanedCols} selected={depVar ? [depVar] : []} onChange={v => setDepVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
                     </div>
                     <div className="var-row">
                       <span className="vl">解释变量 X</span>
-                      <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={indepVars} onChange={setIndepVars} />
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={indepVars} onChange={setIndepVars} dtypes={cleanedData?.dtypes} />
                     </div>
                     <div className="var-row">
                       <span className="vl">控制变量 <span className="vh">可不选</span></span>
-                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={controlVars} onChange={setControlVars} />
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
                     </div>
                   </>
                 )}
                 {needsPanel && (
                   <>
                     <div className="var-row">
-                      <span className="vl">个体变量 <span className="vh">如 firm_id</span></span>
-                      <TagSelector options={cleanedCols} selected={entityVar ? [entityVar] : []} onChange={v => setEntityVar(v[0] || "")} single />
+                      <span className="vl">个体变量 <span className="vh">企业/机构唯一ID，如 stkcd、firm_id（选文本或整数列）</span></span>
+                      <TagSelector options={cleanedCols} selected={entityVar ? [entityVar] : []} onChange={v => setEntityVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
                     </div>
                     <div className="var-row">
-                      <span className="vl">时间变量 <span className="vh">如 year</span></span>
-                      <TagSelector options={cleanedCols} selected={timeVar ? [timeVar] : []} onChange={v => setTimeVar(v[0] || "")} single />
+                      <span className="vl">时间变量 <span className="vh">年份整数列，如 year（不要选日期列）</span></span>
+                      <TagSelector options={cleanedCols} selected={timeVar ? [timeVar] : []} onChange={v => setTimeVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                      {timeVar && (() => {
+                        const t = cleanedData?.dtypes?.[timeVar] || "";
+                        const isDate = t.startsWith("datetime") || /日期|date|时间|time/i.test(timeVar);
+                        if (!isDate) return null;
+                        return (
+                          <div className="panel-tip warn">
+                            ⚠️ "{timeVar}" 是日期列，系统会自动提取年份。建议在清洗阶段新增年份整数列（如 year）以获得最准确的结果。
+                          </div>
+                        );
+                      })()}
                     </div>
                   </>
                 )}
@@ -770,7 +791,7 @@ export default function Home() {
                     {!robustSE && (
                       <div style={{ marginTop: 8 }}>
                         <span className="vl">聚类变量</span>
-                        <TagSelector options={cleanedCols} selected={clusterVar ? [clusterVar] : []} onChange={v => setClusterVar(v[0] || "")} single />
+                        <TagSelector options={cleanedCols} selected={clusterVar ? [clusterVar] : []} onChange={v => setClusterVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
                       </div>
                     )}
                   </div>
@@ -912,6 +933,16 @@ export default function Home() {
         .vtag { background: #f0ece3; border: 1px solid #ddd8cc; border-radius: 4px; padding: 3px 10px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; cursor: pointer; transition: all 0.15s; user-select: none; }
         .vtag:hover { border-color: #2c4a8a; color: #2c4a8a; }
         .vtag.sel { background: #2c4a8a; color: white; border-color: #2c4a8a; }
+        .dt-badge { display: inline-block; font-size: 9px; padding: 0 4px; border-radius: 2px; margin-left: 4px; font-weight: 700; letter-spacing: 0; font-family: 'IBM Plex Mono', monospace; vertical-align: middle; line-height: 14px; }
+        .dt-num   { background: rgba(44,74,138,0.12); color: #2c4a8a; }
+        .dt-int   { background: rgba(42,122,42,0.12); color: #2a7a2a; }
+        .dt-date  { background: rgba(200,100,0,0.15); color: #c86400; }
+        .dt-str   { background: rgba(130,130,130,0.12); color: #888; }
+        .dt-bool  { background: rgba(138,44,138,0.12); color: #8a2c8a; }
+        .dt-other { background: #f0ece3; color: #8a8078; }
+        .vtag.sel .dt-badge { opacity: 0.8; background: rgba(255,255,255,0.25); color: white; }
+        .panel-tip { margin-top: 6px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; padding: 6px 10px; border-radius: 4px; line-height: 1.6; }
+        .panel-tip.warn { background: rgba(200,100,0,0.07); border: 1px solid rgba(200,100,0,0.25); color: #c86400; }
         .run-btn { background: #2c4a8a; color: white; border: none; border-radius: 6px; padding: 10px 24px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'IBM Plex Sans', sans-serif; transition: all 0.15s; }
         .run-btn:hover { background: #1e3a6e; }
         .run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
