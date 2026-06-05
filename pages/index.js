@@ -371,6 +371,9 @@ export default function Home() {
   const [cleanPreview, setCleanPreview] = useState(null);
   const [doClean, setDoClean] = useState("");
   const [layer1Loading, setLayer1Loading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null); // null | 0-100
+  const [uploadSpeed, setUploadSpeed] = useState(null);       // bytes/s
+  const [uploadETA, setUploadETA] = useState(null);           // seconds
 
   const [analysisTypes, setAnalysisTypes] = useState([]);
   const [selectedVars, setSelectedVars] = useState([]);
@@ -389,6 +392,23 @@ export default function Home() {
 
   const fileRef = useRef();
 
+  function fmtSize(b) {
+    if (!b) return "0 B";
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  }
+  function fmtSpeed(bps) {
+    if (bps < 1024) return `${Math.round(bps)} B/s`;
+    if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(0)} KB/s`;
+    return `${(bps / 1024 / 1024).toFixed(1)} MB/s`;
+  }
+  function fmtETA(s) {
+    if (!s || s < 1) return "< 1秒";
+    if (s < 60) return `${Math.round(s)}秒`;
+    return `${Math.floor(s / 60)}分${Math.round(s % 60)}秒`;
+  }
+
   async function handleUpload(newFiles) {
     if (!newFiles.length) return;
     const combined = [...uploadedFiles, ...Array.from(newFiles)].slice(0, 5);
@@ -396,14 +416,38 @@ export default function Home() {
     const form = new FormData();
     combined.forEach(f => form.append("files", f));
     setLayer1Loading(true);
+    setUploadProgress(0);
+    setUploadSpeed(null);
+    setUploadETA(null);
     try {
-      const res = await fetch(`${API_URL}/api/clean/upload`, { method: "POST", body: form });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.detail || "上传失败");
+      const text = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const t0 = Date.now();
+        xhr.upload.onprogress = e => {
+          if (!e.lengthComputable || !e.total) return;
+          const pct = Math.round((e.loaded / e.total) * 100);
+          const elapsed = (Date.now() - t0) / 1000;
+          const speed = elapsed > 0.2 ? e.loaded / elapsed : 0;
+          const eta = speed > 0 ? (e.total - e.loaded) / speed : null;
+          setUploadProgress(pct);
+          if (speed > 0) setUploadSpeed(speed);
+          setUploadETA(eta);
+        };
+        xhr.upload.onload = () => { setUploadProgress(100); setUploadSpeed(null); setUploadETA(null); };
+        xhr.onload  = () => xhr.status < 300 ? resolve(xhr.responseText) : reject(new Error(xhr.responseText || `HTTP ${xhr.status}`));
+        xhr.onerror = () => reject(new Error("网络错误，请检查连接"));
+        xhr.open("POST", `${API_URL}/api/clean/upload`);
+        xhr.send(form);
+      });
+      const json = JSON.parse(text);
+      if (!json.files) throw new Error(json.detail || "上传失败");
       setFilePreviews(json.files);
       setMergeCheck(null);
     } catch (e) { alert("上传失败：" + e.message); }
     setLayer1Loading(false);
+    setUploadProgress(null);
+    setUploadSpeed(null);
+    setUploadETA(null);
   }
 
   function removeFile(idx) {
@@ -534,15 +578,41 @@ export default function Home() {
         {/* 01 上传 */}
         <div className="section">
           <div className="sh"><span className="sn">01</span><span className="st">上传数据文件</span><span className="shint">最多5个</span></div>
-          <div className="upload-zone" onClick={() => fileRef.current.click()}
+          <div className={`upload-zone ${layer1Loading ? "uploading" : ""}`}
+            onClick={() => !layer1Loading && fileRef.current.click()}
             onDragOver={e => e.preventDefault()}
-            onDrop={e => { e.preventDefault(); handleUpload(e.dataTransfer.files); }}>
+            onDrop={e => { e.preventDefault(); if (!layer1Loading) handleUpload(e.dataTransfer.files); }}>
             <input type="file" ref={fileRef} accept=".csv,.xlsx,.xls,.dta" multiple style={{ display: "none" }}
               onChange={e => handleUpload(e.target.files)} />
-            <div className="uicon">📂</div>
-            <h3>上传数据文件</h3>
+            <div className="uicon">{layer1Loading ? "⏳" : "📂"}</div>
+            <h3>{layer1Loading ? (uploadProgress < 100 ? "上传中…" : "解析中…") : "上传数据文件"}</h3>
             <p>支持 .csv / .xlsx / .xls / .dta · 可多选</p>
           </div>
+
+          {uploadProgress !== null && (
+            <div className="upload-progress-wrap">
+              <div className="up-bar-bg">
+                <div className="up-bar-fill" style={{ width: `${uploadProgress}%` }} />
+              </div>
+              <div className="up-info">
+                {uploadProgress < 100
+                  ? <>{uploadProgress}%{uploadSpeed > 0 && <> · {fmtSpeed(uploadSpeed)}</>}{uploadETA !== null && uploadETA > 0 && <> · 预计剩余 {fmtETA(uploadETA)}</>}</>
+                  : <>上传完成 · 服务器解析文件中<span className="dots-anim">…</span></>
+                }
+              </div>
+            </div>
+          )}
+
+          {layer1Loading && uploadProgress !== null && filePreviews.length === 0 && uploadedFiles.length > 0 && (
+            <div className="file-cards">
+              {uploadedFiles.map((f, i) => (
+                <div key={i} className="file-card fc-pending">
+                  <div className="fc-header"><div className="fc-name">📄 {f.name}</div></div>
+                  <div className="fc-meta">{fmtSize(f.size)} · 待解析</div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {filePreviews.length > 0 && (
             <div className="file-cards">
@@ -552,7 +622,7 @@ export default function Home() {
                     <div className="fc-name">📄 {f.filename}</div>
                     <button className="fc-del" onClick={() => removeFile(i)}>✕</button>
                   </div>
-                  <div className="fc-meta">{f.rows.toLocaleString()} 行 × {f.cols} 列</div>
+                  <div className="fc-meta">{f.rows.toLocaleString()} 行 × {f.cols} 列 · {fmtSize(uploadedFiles.find(u => u.name === f.filename)?.size)}</div>
                   <div className="fc-cols">
                     {f.columns.map(c => {
                       const dtype = f.dtypes?.[c] || "";
@@ -883,6 +953,15 @@ export default function Home() {
         .toggle-btn:hover { border-color: #2c4a8a; color: #2c4a8a; }
         .upload-zone { border: 2px dashed #ddd8cc; border-radius: 8px; padding: 40px 24px; text-align: center; cursor: pointer; background: #fffef9; transition: all 0.2s; }
         .upload-zone:hover { border-color: #2c4a8a; }
+        .upload-zone.uploading { cursor: default; opacity: 0.75; pointer-events: none; }
+        .upload-progress-wrap { margin-top: 10px; }
+        .up-bar-bg { height: 4px; background: #e8e4dc; border-radius: 2px; overflow: hidden; }
+        .up-bar-fill { height: 100%; background: #2c4a8a; border-radius: 2px; transition: width 0.25s ease; }
+        .up-info { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #5a5a5a; margin-top: 5px; }
+        .fc-pending { opacity: 0.55; }
+        @keyframes dots { 0%,20%{content:'.'} 40%{content:'..'} 60%,100%{content:'...'} }
+        .dots-anim::after { content: ''; animation: dots 1.2s steps(1) infinite; }
+        .dots-anim { font-style: italic; }
         .uicon { font-size: 28px; margin-bottom: 10px; }
         .upload-zone h3 { font-family: 'Playfair Display', serif; font-size: 15px; margin-bottom: 4px; }
         .upload-zone p { font-size: 12px; color: #8a8078; font-family: 'IBM Plex Mono', monospace; }

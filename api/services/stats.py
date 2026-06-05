@@ -151,7 +151,7 @@ def run_panel(
 
     all_x_vars = indep_vars + control_vars
     cols_needed = [dep_var, entity_var, time_var] + all_x_vars
-    if cluster_var:
+    if cluster_var and cluster_var not in cols_needed:
         cols_needed.append(cluster_var)
 
     sub = df[cols_needed].copy()
@@ -159,8 +159,18 @@ def run_panel(
     # entity_var 保持字符串（股票代码前导零不能被 to_numeric 吃掉）
     for col in [dep_var] + all_x_vars:
         sub[col] = pd.to_numeric(sub[col], errors="coerce")
-    sub[time_var] = pd.to_numeric(sub[time_var], errors="coerce")
     sub[entity_var] = sub[entity_var].astype(str).str.strip()
+
+    # 时间变量：先尝试直接数值化；若全部失败（如"2020-12-31"日期字符串），则解析为日期后提取年份
+    time_raw = sub[time_var].copy()
+    sub[time_var] = pd.to_numeric(time_raw, errors="coerce")
+    if sub[time_var].isna().all():
+        try:
+            parsed = pd.to_datetime(time_raw, errors="coerce")
+            if parsed.notna().any():
+                sub[time_var] = parsed.dt.year
+        except Exception:
+            pass
 
     # 转换后诊断各列 NaN，便于定位问题
     check_cols = [dep_var] + all_x_vars + [time_var]
@@ -248,7 +258,7 @@ def run_panel(
         model = RandomEffects(y, X_re)
         stata_cmd = f"xtreg {dep_var} {' '.join(X_raw.columns.tolist())}, re"
 
-    res = model.fit(cov_type=cov_type, check_rank=False, **cov_kwds)
+    res = model.fit(cov_type=cov_type, **cov_kwds)
 
     # Hausman 检验
     # Bug4 Fix: 检验必须用 unadjusted 协方差，与用户选择的 SE 类型无关
