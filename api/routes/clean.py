@@ -108,10 +108,31 @@ async def merge_and_clean(
         "dtypes": {col: str(dtype) for col, dtype in cleaned.dtypes.items()},
         "missing_after": cleaned.isnull().sum().to_dict(),
         "preview": cleaned.head(10).fillna("").to_dict(orient="records"),
-        "data": cleaned.fillna("").to_dict(orient="records"),
+        "data": _df_to_json_records(cleaned),
         "columns": cleaned.columns.tolist(),
         "do_clean": do_snippet,
     }
+
+
+def _df_to_json_records(df: "pd.DataFrame") -> list:
+    """
+    将 DataFrame 转为 JSON 可序列化的 records 列表。
+    - 数值列的 NaN 保持为 None（JSON null），而非 "" 空字符串。
+      否则分析层 pd.to_numeric("", errors="coerce") 会把整列变成 NaN，导致 dropna 后数据为空。
+    - 字符串/object 列的 NaN 用 "" 替代，保持前端显示正常。
+    """
+    import math
+    records = df.to_dict(orient="records")
+    num_cols = set(df.select_dtypes(include="number").columns)
+    for rec in records:
+        for k, v in rec.items():
+            if k in num_cols:
+                if isinstance(v, float) and math.isnan(v):
+                    rec[k] = None
+            else:
+                if v is None or (isinstance(v, float) and math.isnan(v)):
+                    rec[k] = ""
+    return records
 
 
 def _gen_clean_do(merge_cfg: dict, clean_cfg: dict, dfs: dict) -> str:

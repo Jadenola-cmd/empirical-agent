@@ -156,19 +156,30 @@ def run_panel(
 
     sub = df[cols_needed].copy()
 
-    # ── 关键修复：entity_var / time_var 保持字符串，只转换数值变量 ──
-    # entity_var（如股票代码000001）绝对不能被 to_numeric 转换，否则前导零丢失导致索引错乱
+    # entity_var 保持字符串（股票代码前导零不能被 to_numeric 吃掉）
     for col in [dep_var] + all_x_vars:
         sub[col] = pd.to_numeric(sub[col], errors="coerce")
-    # time_var 通常是年份整数，可以转，但保持为 int 而非 float
     sub[time_var] = pd.to_numeric(sub[time_var], errors="coerce")
-    # entity_var 强制转为字符串，确保股票代码等保持原样
     sub[entity_var] = sub[entity_var].astype(str).str.strip()
 
-    sub = sub.dropna(subset=[dep_var] + all_x_vars + [time_var])
+    # 转换后诊断各列 NaN，便于定位问题
+    check_cols = [dep_var] + all_x_vars + [time_var]
+    total_rows = len(sub)
+    nan_counts = {col: int(sub[col].isna().sum()) for col in check_cols if sub[col].isna().any()}
+
+    sub = sub.dropna(subset=check_cols)
 
     if len(sub) == 0:
-        raise ValueError("有效数据为空，请检查变量选择和缺失值情况")
+        if nan_counts:
+            detail = "；".join(
+                f"{col} 有 {n}/{total_rows} 行无法转为数值" for col, n in nan_counts.items()
+            )
+            raise ValueError(
+                f"有效数据为空（共 {total_rows} 行，dropna 后剩 0 行）。"
+                f"问题变量：{detail}。"
+                "常见原因：该列包含中文字符/单位/百分号/逗号，或在数据清洗时未用均值/中位数填充缺失值。"
+            )
+        raise ValueError(f"有效数据为空（共 {total_rows} 行），请检查变量选择和缺失值情况")
 
     # 检查面板结构
     n_entities = sub[entity_var].nunique()
