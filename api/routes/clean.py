@@ -3,7 +3,7 @@ from typing import List
 import json
 from services.data_loader import load_file
 from services.cleaner import merge_files, clean_data, check_merge_type
-from services.session_store import save_session, load_session
+from services.session_store import save_session, load_session, save_cleaned
 
 router = APIRouter()
 
@@ -118,6 +118,7 @@ async def merge_and_clean(
 
     # 生成 do 文件片段（清洗部分）
     do_snippet = _gen_clean_do(merge_cfg, clean_cfg, dfs)
+    cleaned_session_id = save_cleaned(cleaned)
 
     return {
         "report": report,
@@ -130,6 +131,7 @@ async def merge_and_clean(
         "data": _df_to_json_records(cleaned),
         "columns": cleaned.columns.tolist(),
         "do_clean": do_snippet,
+        "cleaned_session_id": cleaned_session_id,
     }
 
 
@@ -146,7 +148,7 @@ def _df_to_json_records(df: "pd.DataFrame") -> list:
     for rec in records:
         for k, v in rec.items():
             if k in num_cols:
-                if isinstance(v, float) and math.isnan(v):
+                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                     rec[k] = None
             else:
                 if v is None or (isinstance(v, float) and math.isnan(v)):

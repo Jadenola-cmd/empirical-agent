@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+import math
 import pandas as pd
 from services.stats import (
     run_descriptive,
@@ -9,12 +10,25 @@ from services.stats import (
     run_panel,
 )
 from services.interpreter import interpret_results
+from services.session_store import load_cleaned
 
 router = APIRouter()
 
 
+def _sanitize(obj):
+    """Recursively replace inf/nan with None so FastAPI can serialize to JSON."""
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
+
+
 class AnalysisRequest(BaseModel):
-    data: List[Dict[str, Any]]
+    cleaned_session_id: Optional[str] = None
+    data: Optional[List[Dict[str, Any]]] = None
     analysis_types: List[str]
     variables: Optional[List[str]] = None
     dep_var: Optional[str] = None
@@ -77,10 +91,15 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
 
 @router.post("/run")
 async def run_analysis(req: AnalysisRequest):
-    if not req.data:
-        raise HTTPException(status_code=400, detail="数据不能为空")
-
-    df = pd.DataFrame(req.data)
+    if req.cleaned_session_id:
+        try:
+            df = load_cleaned(req.cleaned_session_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    elif req.data:
+        df = pd.DataFrame(req.data)
+    else:
+        raise HTTPException(status_code=400, detail="数据不能为空，请提供 cleaned_session_id 或 data")
 
     if req.variables:
         missing_cols = [v for v in req.variables if v not in df.columns]
@@ -154,10 +173,10 @@ async def run_analysis(req: AnalysisRequest):
 
     do_analyze = _gen_analyze_do(req)
 
-    return {
+    return _sanitize({
         "success": True,
         "results": results,
         "errors": errors if errors else None,
         "interpretation": interpretation,
         "do_analyze": do_analyze,
-    }
+    })

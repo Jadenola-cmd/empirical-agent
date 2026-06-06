@@ -203,8 +203,8 @@ def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, 
             Q3 = df[col].quantile(0.75)
             IQR = Q3 - Q1
             df = df[
-                (df[col] >= Q1 - threshold * IQR) | df[col].isna() |
-                (df[col] <= Q3 + threshold * IQR)
+                df[col].isna() |
+                ((df[col] >= Q1 - threshold * IQR) & (df[col] <= Q3 + threshold * IQR))
             ]
         outliers_removed = rows_before - len(df)
         report["steps"].append({

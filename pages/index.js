@@ -56,12 +56,12 @@ function exportXlsx(analyzeResults, cleanedData) {
       rows.push(["", reg.dep_var]);
       rows.push([]);
       mainVars.forEach(c => {
-        rows.push([c.variable, `${c.coef.toFixed(3)}${c.sig}`]);
-        rows.push(["", `(${c.t_stat.toFixed(2)})`]);
+        rows.push([c.variable, `${(c.coef?.toFixed(3) ?? "—")}${c.sig}`]);
+        rows.push(["", `(${c.t_stat?.toFixed(2) ?? "—"})`]);
       });
       if (cons) {
-        rows.push(["_cons", `${cons.coef.toFixed(3)}${cons.sig}`]);
-        rows.push(["", `(${cons.t_stat.toFixed(2)})`]);
+        rows.push(["_cons", `${(cons.coef?.toFixed(3) ?? "—")}${cons.sig}`]);
+        rows.push(["", `(${cons.t_stat?.toFixed(2) ?? "—"})`]);
       }
       rows.push([]);
       (reg.categorical_vars || []).forEach(cv => rows.push([`${cv} 虚拟化`, "Yes"]));
@@ -110,12 +110,12 @@ function exportXlsx(analyzeResults, cleanedData) {
       const cmpRows = [header, subHeader, []];
       function getC(data, v) { return data.coefficients.find(c => c.variable === v); }
       mainVarNames.forEach(v => {
-        cmpRows.push([v, ...regModels.map(m => { const c = getC(m.data, v); return c ? `${c.coef.toFixed(3)}${c.sig}` : "—"; })]);
-        cmpRows.push(["", ...regModels.map(m => { const c = getC(m.data, v); return c ? `(${c.t_stat.toFixed(2)})` : ""; })]);
+        cmpRows.push([v, ...regModels.map(m => { const c = getC(m.data, v); return c ? `${(c.coef?.toFixed(3) ?? "—")}${c.sig}` : "—"; })]);
+        cmpRows.push(["", ...regModels.map(m => { const c = getC(m.data, v); return c ? `(${c.t_stat?.toFixed(2) ?? "—"})` : ""; })]);
       });
       if (hasCons) {
-        cmpRows.push(["_cons", ...regModels.map(m => { const c = getC(m.data, "_cons"); return c ? `${c.coef.toFixed(3)}${c.sig}` : "—"; })]);
-        cmpRows.push(["", ...regModels.map(m => { const c = getC(m.data, "_cons"); return c ? `(${c.t_stat.toFixed(2)})` : ""; })]);
+        cmpRows.push(["_cons", ...regModels.map(m => { const c = getC(m.data, "_cons"); return c ? `${(c.coef?.toFixed(3) ?? "—")}${c.sig}` : "—"; })]);
+        cmpRows.push(["", ...regModels.map(m => { const c = getC(m.data, "_cons"); return c ? `(${c.t_stat?.toFixed(2) ?? "—"})` : ""; })]);
       }
       cmpRows.push([]);
       allCatV.forEach(cv => cmpRows.push([`${cv} 虚拟化`, ...regModels.map(m => (m.data.categorical_vars || []).includes(cv) ? "Yes" : "No")]));
@@ -317,8 +317,8 @@ function RegressionTable({ data, label, bracketMode = "t" }) {
     const bracket = bracketMode === "se" ? c.std_error?.toFixed(3) : c.t_stat?.toFixed(2);
     return (
       <td className="col-reg">
-        <div>{c.coef.toFixed(3)}<sup className="sig">{c.sig}</sup></div>
-        <div className="tval">({bracket})</div>
+        <div>{(c.coef?.toFixed(3) ?? "—")}<sup className="sig">{c.sig}</sup></div>
+        <div className="tval">({bracket ?? "—"})</div>
       </td>
     );
   }
@@ -422,8 +422,8 @@ function CompareTable({ results }) {
     const bracket = bracketMode === "se" ? coef.std_error?.toFixed(3) : coef.t_stat?.toFixed(2);
     return (
       <td className="col-reg compare-cell">
-        <div>{coef.coef.toFixed(3)}<sup className="sig">{coef.sig}</sup></div>
-        <div className="tval">({bracket})</div>
+        <div>{(coef.coef?.toFixed(3) ?? "—")}<sup className="sig">{coef.sig}</sup></div>
+        <div className="tval">({bracket ?? "—"})</div>
       </td>
     );
   }
@@ -546,7 +546,8 @@ export default function Home() {
   const [doClean, setDoClean] = useState("");
   const [layer1Loading, setLayer1Loading] = useState(false);
   const [isCleaning, setIsCleaning] = useState(false);        // true when /merge-and-clean is running
-  const [sessionId, setSessionId] = useState(null);           // server-side file cache session
+  const [sessionId, setSessionId] = useState(null);           // server-side raw-file cache session
+  const [cleanedSessionId, setCleanedSessionId] = useState(null); // server-side cleaned-data session
   const [uploadProgress, setUploadProgress] = useState(null); // null | 0-100
   const [uploadSpeed, setUploadSpeed] = useState(null);       // bytes/s
   const [uploadETA, setUploadETA] = useState(null);           // seconds
@@ -641,6 +642,7 @@ export default function Home() {
     setFieldMaps(prev => { const n = { ...prev }; delete n[fn]; return n; });
     setMergeCheck(null);
     setSessionId(null);
+    setCleanedSessionId(null);
     setCleanedData(null);
     setCleanReport(null);
     setCleanPreview(null);
@@ -699,6 +701,7 @@ export default function Home() {
       setCleanReport(json.report);
       setCleanPreview(json.preview);
       setDoClean(json.do_clean || "");
+      setCleanedSessionId(json.cleaned_session_id || null);
     } catch (e) { alert("清洗失败：" + e.message); }
     setLayer1Loading(false);
     setIsCleaning(false);
@@ -710,24 +713,29 @@ export default function Home() {
     setLayer2Loading(true);
     setAnalyzeResults(null);
     try {
+      const body = {
+        analysis_types: analysisTypes,
+        variables: selectedVars.length ? selectedVars : null,
+        dep_var: depVar || null,
+        indep_vars: indepVars.length ? indepVars : null,
+        control_vars: controlVars.length ? controlVars : null,
+        entity_var: entityVar || null,
+        time_var: timeVar || null,
+        time_effects: timeEffects,
+        robust_se: robustSE,
+        cluster_var: clusterVar || null,
+        interpret,
+        custom_question: customQ || null,
+      };
+      if (cleanedSessionId) {
+        body.cleaned_session_id = cleanedSessionId;
+      } else {
+        body.data = cleanedData.data;
+      }
       const res = await fetch(`${API_URL}/api/analyze/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data: cleanedData.data,
-          analysis_types: analysisTypes,
-          variables: selectedVars.length ? selectedVars : null,
-          dep_var: depVar || null,
-          indep_vars: indepVars.length ? indepVars : null,
-          control_vars: controlVars.length ? controlVars : null,
-          entity_var: entityVar || null,
-          time_var: timeVar || null,
-          time_effects: timeEffects,
-          robust_se: robustSE,
-          cluster_var: clusterVar || null,
-          interpret,
-          custom_question: customQ || null,
-        }),
+        body: JSON.stringify(body),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.detail || "分析失败");
