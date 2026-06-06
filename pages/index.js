@@ -22,11 +22,11 @@ function exportXlsx(analyzeResults, cleanedData) {
         ...r.descriptive.vars.map(v => [
           v.name,
           v.obs,
-          +v.mean.toFixed(3),
-          +v.sd.toFixed(3),
-          +v.min.toFixed(3),
-          +v.median.toFixed(3),
-          +v.max.toFixed(3),
+          v.mean != null ? +v.mean.toFixed(3) : "",
+          v.sd != null ? +v.sd.toFixed(3) : "",
+          v.min != null ? +v.min.toFixed(3) : "",
+          v.median != null ? +v.median.toFixed(3) : "",
+          v.max != null ? +v.max.toFixed(3) : "",
         ]),
         [],
         [r.descriptive.notes || "样本标准差（ddof=1），与 Stata summarize 一致"],
@@ -39,7 +39,7 @@ function exportXlsx(analyzeResults, cleanedData) {
       const header = ["", ...vars.map((_, i) => `(${i + 1})`)];
       const dataRows = r.correlation.matrix.map((row, i) => [
         vars[i],
-        ...row.map((cell, j) => i === j ? "1" : `${cell.coef.toFixed(3)}${cell.sig}`),
+        ...row.map((cell, j) => i === j ? "1" : `${cell.coef?.toFixed(3) ?? "—"}${cell.sig}`),
       ]);
       const rows = [header, ...dataRows, [], [r.correlation.notes || "***p<0.01, **p<0.05, *p<0.1"]];
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "相关矩阵");
@@ -259,11 +259,11 @@ function DescriptiveTable({ data }) {
               <tr key={i}>
                 <td className="col-var">{v.name}</td>
                 <td>{v.obs.toLocaleString()}</td>
-                <td>{v.mean.toFixed(3)}</td>
-                <td>{v.sd.toFixed(3)}</td>
-                <td>{v.min.toFixed(3)}</td>
-                <td>{v.median.toFixed(3)}</td>
-                <td>{v.max.toFixed(3)}</td>
+                <td>{v.mean?.toFixed(3) ?? "—"}</td>
+                <td>{v.sd?.toFixed(3) ?? "—"}</td>
+                <td>{v.min?.toFixed(3) ?? "—"}</td>
+                <td>{v.median?.toFixed(3) ?? "—"}</td>
+                <td>{v.max?.toFixed(3) ?? "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -291,7 +291,7 @@ function CorrelationTable({ data }) {
                 <td className="col-var">{v}</td>
                 {(data.matrix[i] || []).map((cell, j) => (
                   <td key={j} className="col-corr">
-                    {i === j ? "1" : <>{cell.coef.toFixed(3)}<sup className="sig">{cell.sig}</sup></>}
+                    {i === j ? "1" : <>{cell.coef?.toFixed(3) ?? "—"}<sup className="sig">{cell.sig}</sup></>}
                   </td>
                 ))}
               </tr>
