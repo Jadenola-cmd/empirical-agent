@@ -212,6 +212,24 @@ def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, 
             "detail": f"IQR法（倍数={threshold}），移除 {outliers_removed} 行"
         })
 
+    # 6. 缩尾处理（Winsorize，按全局百分位截断）
+    winsorize_vars = config.get("winsorize_vars", [])
+    winsorize_lower = float(config.get("winsorize_lower", 1))
+    winsorize_upper = float(config.get("winsorize_upper", 99))
+    winsorized = []
+    for col in winsorize_vars:
+        if col not in df.columns:
+            continue
+        series = pd.to_numeric(df[col], errors="coerce")
+        lo, hi = series.quantile(winsorize_lower / 100), series.quantile(winsorize_upper / 100)
+        df[col] = series.clip(lower=lo, upper=hi)
+        winsorized.append(col)
+    if winsorized:
+        report["steps"].append({
+            "step": "缩尾处理",
+            "detail": f"{winsorized}（{winsorize_lower}%-{winsorize_upper}%分位截断）"
+        })
+
     df = df.reset_index(drop=True)
     report["rows_after"] = len(df)
     report["cols_after"] = len(df.columns)

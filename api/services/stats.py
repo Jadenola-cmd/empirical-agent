@@ -87,6 +87,37 @@ def run_correlation(df: pd.DataFrame, numeric_cols: List[str]) -> Dict:
     }
 
 
+def run_panel_balance(df: pd.DataFrame, entity_var: str, time_var: str) -> Dict:
+    sub = df[[entity_var, time_var]].copy()
+    sub[entity_var] = sub[entity_var].astype(str).str.strip()
+    sub[time_var] = pd.to_numeric(sub[time_var], errors="coerce")
+    sub = sub.dropna()
+
+    n_entities = sub[entity_var].nunique()
+    n_times = sub[time_var].nunique()
+    expected = n_entities * n_times
+    actual = len(sub.drop_duplicates())
+    is_balanced = expected == actual
+
+    return {
+        "type":         "panel_balance",
+        "entity_var":   entity_var,
+        "time_var":     time_var,
+        "n_entities":   n_entities,
+        "n_times":      n_times,
+        "expected_obs": expected,
+        "actual_obs":   actual,
+        "is_balanced":  is_balanced,
+        "missing_obs":  expected - actual,
+        "notes": (
+            "平衡面板：每个个体在每个时间点都有观测，对应 Stata xtdescribe 显示 100% 完整"
+            if is_balanced else
+            f"非平衡面板：缺失 {expected - actual} 个个体-时间观测组合，"
+            "对应 Stata xtdescribe 可查看具体缺失模式；估计面板模型时仍可正常使用，但需在论文中注明"
+        ),
+    }
+
+
 def run_ols(
     df: pd.DataFrame,
     dep_var: str,
@@ -174,6 +205,110 @@ def run_ols(
         "time_effects":    False,
         "notes":           f"括号内为t值，{se_type}标准误，***p<0.01, **p<0.05, *p<0.1{cat_note}",
     }
+
+
+def run_moderation(
+    df: pd.DataFrame,
+    dep_var: str,
+    indep_var: str,
+    moderator_var: str,
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    """调节效应分析：X、M 中心化后构造交互项 X_c*M_c，复用 run_ols 估计。
+    中心化（去均值）是 Aiken & West (1991) 的标准做法，可降低交互项与主效应的多重共线性。
+    """
+    sub = df.copy()
+    x = pd.to_numeric(sub[indep_var], errors="coerce")
+    m = pd.to_numeric(sub[moderator_var], errors="coerce")
+    x_c_name, m_c_name = f"{indep_var}_c", f"{moderator_var}_c"
+    inter_name = f"{indep_var}_x_{moderator_var}"
+
+    sub[x_c_name] = x - x.mean()
+    sub[m_c_name] = m - m.mean()
+    sub[inter_name] = sub[x_c_name] * sub[m_c_name]
+
+    result = run_ols(
+        sub,
+        dep_var=dep_var,
+        indep_vars=[x_c_name, m_c_name, inter_name],
+        control_vars=control_vars,
+        robust_se=robust_se,
+        cluster_var=cluster_var,
+    )
+    result["type"] = "moderation"
+    result["indep_var"] = indep_var
+    result["moderator_var"] = moderator_var
+    result["interaction_var"] = inter_name
+    result["notes"] += "；解释变量与调节变量已中心化（去均值）后构造交互项，对齐 Aiken & West (1991) 标准做法"
+    return result
+
+
+def run_did(
+    df: pd.DataFrame,
+    dep_var: str,
+    entity_var: str,
+    time_var: str,
+    treatment_var: str,
+    policy_time: float,
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    """双重差分（DID），基于个体+时间双向固定效应估计交互项 _did = treatment * post。
+    个体FE吸收处理组的时不变特征，时间FE吸收政策前后的共同冲击，仅 _did 系数衡量政策净效应，
+    对应 Stata: xtreg y did controls i.year, fe
+    """
+    sub = df.copy()
+    time_numeric = pd.to_numeric(sub[time_var], errors="coerce")
+    treat = pd.to_numeric(sub[treatment_var], errors="coerce")
+    sub["_post"] = (time_numeric >= policy_time).astype(float)
+    sub["_did"] = treat * sub["_post"]
+
+    result = run_panel(
+        sub,
+        dep_var=dep_var,
+        indep_vars=["_did"],
+        control_vars=control_vars,
+        entity_var=entity_var,
+        time_var=time_var,
+        model_type="fe",
+        robust_se=robust_se,
+        cluster_var=cluster_var,
+        time_effects=True,
+    )
+    result["type"] = "did"
+    result["did_var"] = "_did"
+    result["treatment_var"] = treatment_var
+    result["policy_time"] = policy_time
+
+    # 平行趋势检验：仅用政策前样本，检验处理组与对照组在政策前是否存在显著的趋势差异
+    parallel_trends = None
+    pre = sub[time_numeric < policy_time].copy()
+    try:
+        if pre[entity_var].nunique() >= 2 and pre[time_var].nunique() >= 2:
+            pre["_trend"] = pd.to_numeric(pre[time_var], errors="coerce")
+            pre["_treat_trend"] = pd.to_numeric(pre[treatment_var], errors="coerce") * pre["_trend"]
+            pt = run_ols(pre, dep_var, indep_vars=[treatment_var, "_trend", "_treat_trend"])
+            inter = next(c for c in pt["coefficients"] if c["variable"] == "_treat_trend")
+            passed = inter["p_value"] >= 0.1
+            parallel_trends = {
+                "interaction_coef": inter["coef"],
+                "p_value":          inter["p_value"],
+                "pass":             passed,
+                "conclusion": (
+                    "未发现显著的处理组前趋势差异，平行趋势假设成立"
+                    if passed else
+                    "处理组与对照组在政策前存在显著趋势差异，平行趋势假设可能不成立，DID 结果需谨慎解释"
+                ),
+            }
+    except Exception:
+        parallel_trends = None
+
+    result["parallel_trends"] = parallel_trends
+    result["notes"] += "；DID 通过个体+时间双向固定效应吸收处理组、时期主效应，仅估计交互项 _did（政策净效应）"
+    return result
 
 
 def run_panel(

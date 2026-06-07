@@ -8,6 +8,9 @@ from services.stats import (
     run_correlation,
     run_ols,
     run_panel,
+    run_panel_balance,
+    run_moderation,
+    run_did,
 )
 from services.interpreter import interpret_results
 from services.session_store import load_cleaned
@@ -39,6 +42,9 @@ class AnalysisRequest(BaseModel):
     entity_var: Optional[str] = None
     time_var: Optional[str] = None
     time_effects: Optional[bool] = False
+    moderator_var: Optional[str] = None
+    treatment_var: Optional[str] = None
+    policy_time: Optional[float] = None
     interpret: Optional[bool] = False
     custom_question: Optional[str] = None
 
@@ -75,6 +81,32 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
             se_opt = ""
         lines.append(f"xtreg {req.dep_var} {' '.join(all_x)}, fe{se_opt}")
 
+    if "panel_balance" in req.analysis_types and req.entity_var and req.time_var:
+        lines.append(f"xtset {req.entity_var} {req.time_var}")
+        lines.append("xtdescribe")
+
+    if "moderation" in req.analysis_types and req.dep_var and req.indep_vars and req.moderator_var:
+        x, m = req.indep_vars[0], req.moderator_var
+        lines.append(f"summarize {x}")
+        lines.append(f"gen {x}_c = {x} - r(mean)")
+        lines.append(f"summarize {m}")
+        lines.append(f"gen {m}_c = {m} - r(mean)")
+        lines.append(f"gen {x}_x_{m} = {x}_c * {m}_c")
+        all_x = [f"{x}_c", f"{m}_c", f"{x}_x_{m}"] + (req.control_vars or [])
+        se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
+        lines.append(f"reg {req.dep_var} {' '.join(all_x)}{se_opt}")
+
+    if "did" in req.analysis_types and req.dep_var and req.entity_var and req.time_var and req.treatment_var:
+        pt = req.policy_time if req.policy_time is not None else "{政策年份}"
+        all_x = ["did"] + (req.control_vars or [])
+        se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
+        lines.append(f"gen post = ({req.time_var} >= {pt})")
+        lines.append(f"gen did = {req.treatment_var} * post")
+        lines.append(f"xtset {req.entity_var} {req.time_var}")
+        lines.append(f"xtreg {req.dep_var} {' '.join(all_x)} i.{req.time_var}, fe{se_opt}")
+        lines.append("* 平行趋势检验（仅用政策前样本）：")
+        lines.append(f"reg {req.dep_var} {req.treatment_var} c.{req.time_var}##c.{req.treatment_var} if {req.time_var} < {pt}")
+
     if "panel_re" in req.analysis_types and req.dep_var:
         all_x = (req.indep_vars or []) + (req.control_vars or [])
         lines.append(f"xtset {req.entity_var} {req.time_var}")
@@ -107,11 +139,15 @@ async def run_analysis(req: AnalysisRequest):
             raise HTTPException(status_code=400, detail=f"变量不存在：{missing_cols}")
         # Bug3 Fix: 面板分析必须保留 entity_var / time_var，即使用户没有在 variables 里选它们
         keep = list(req.variables)
-        if any(t in req.analysis_types for t in ("panel_fe", "panel_re")):
+        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did")):
             if req.entity_var and req.entity_var not in keep:
                 keep.append(req.entity_var)
             if req.time_var and req.time_var not in keep:
                 keep.append(req.time_var)
+        if "did" in req.analysis_types and req.treatment_var and req.treatment_var not in keep:
+            keep.append(req.treatment_var)
+        if "moderation" in req.analysis_types and req.moderator_var and req.moderator_var not in keep:
+            keep.append(req.moderator_var)
         df = df[keep]
 
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
@@ -137,6 +173,47 @@ async def run_analysis(req: AnalysisRequest):
                     df,
                     dep_var=req.dep_var,
                     indep_vars=req.indep_vars or [],
+                    control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
+                )
+
+            elif analysis_type == "panel_balance":
+                if not req.entity_var or not req.time_var:
+                    raise ValueError("面板平衡性检查需要指定 entity_var / time_var")
+                results["panel_balance"] = run_panel_balance(df, req.entity_var, req.time_var)
+
+            elif analysis_type == "moderation":
+                if not req.dep_var:
+                    raise ValueError("调节效应分析需要指定被解释变量 dep_var")
+                if not req.indep_vars:
+                    raise ValueError("调节效应分析需要指定解释变量 X（取第一个）")
+                if not req.moderator_var:
+                    raise ValueError("调节效应分析需要指定调节变量 moderator_var")
+                results["moderation"] = run_moderation(
+                    df,
+                    dep_var=req.dep_var,
+                    indep_var=req.indep_vars[0],
+                    moderator_var=req.moderator_var,
+                    control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
+                )
+
+            elif analysis_type == "did":
+                if not req.dep_var or not req.entity_var or not req.time_var:
+                    raise ValueError("DID 需要指定 dep_var / entity_var / time_var")
+                if not req.treatment_var:
+                    raise ValueError("DID 需要指定处理组变量 treatment_var")
+                if req.policy_time is None:
+                    raise ValueError("DID 需要指定政策时点 policy_time")
+                results["did"] = run_did(
+                    df,
+                    dep_var=req.dep_var,
+                    entity_var=req.entity_var,
+                    time_var=req.time_var,
+                    treatment_var=req.treatment_var,
+                    policy_time=req.policy_time,
                     control_vars=req.control_vars or [],
                     robust_se=req.robust_se,
                     cluster_var=req.cluster_var,

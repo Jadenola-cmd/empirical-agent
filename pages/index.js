@@ -540,6 +540,9 @@ export default function Home() {
   const [dropCols, setDropCols] = useState([]);
   const [strCols, setStrCols] = useState([]);
   const [logVars, setLogVars] = useState([]);
+  const [winsorizeVars, setWinsorizeVars] = useState([]);
+  const [winsorizeLower, setWinsorizeLower] = useState(1);
+  const [winsorizeUpper, setWinsorizeUpper] = useState(99);
   const [cleanedData, setCleanedData] = useState(null);
   const [cleanReport, setCleanReport] = useState(null);
   const [cleanPreview, setCleanPreview] = useState(null);
@@ -562,6 +565,9 @@ export default function Home() {
   const [robustSE, setRobustSE] = useState(false);
   const [clusterVar, setClusterVar] = useState("");
   const [timeEffects, setTimeEffects] = useState(false);
+  const [moderatorVar, setModeratorVar] = useState("");
+  const [treatmentVar, setTreatmentVar] = useState("");
+  const [policyTime, setPolicyTime] = useState("");
   const [analyzeResults, setAnalyzeResults] = useState(null);
   const [doAnalyze, setDoAnalyze] = useState("");
   const [layer2Loading, setLayer2Loading] = useState(false);
@@ -692,6 +698,9 @@ export default function Home() {
       drop_cols: dropCols,
       str_cols: strCols,
       log_vars: logVars,
+      winsorize_vars: winsorizeVars,
+      winsorize_lower: winsorizeLower,
+      winsorize_upper: winsorizeUpper,
     }));
     try {
       const res = await fetch(`${API_URL}/api/clean/merge-and-clean`, { method: "POST", body: form });
@@ -724,6 +733,9 @@ export default function Home() {
         time_effects: timeEffects,
         robust_se: robustSE,
         cluster_var: clusterVar || null,
+        moderator_var: moderatorVar || null,
+        treatment_var: treatmentVar || null,
+        policy_time: policyTime === "" ? null : policyTime,
         interpret,
         custom_question: customQ || null,
       };
@@ -752,8 +764,11 @@ export default function Home() {
   const uniqueCols = [...new Set(allCols)];
   const uniqueMappedCols = [...new Set(mappedCols)];
   const cleanedCols = cleanedData?.columns || [];
-  const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re"].includes(t));
-  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re"].includes(t));
+  const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did"].includes(t));
+  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "did"].includes(t));
+  const needsModeration = analysisTypes.includes("moderation");
+  const needsDID = analysisTypes.includes("did");
+  const needsIndepVars = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation"].includes(t));
   const sectionNum = (base) => filePreviews.length > 1 ? base : base - 1;
 
   return (
@@ -766,6 +781,7 @@ export default function Home() {
       <div className="app">
         <div className="jheader">
           <span className="jname">Empirical Research Platform</span>
+          <a href="/docs" className="jnav-link">使用文档</a>
           <span className="jmeta">数据清洗 · 统计分析 · 论文规范输出</span>
         </div>
         <div className="title-block">
@@ -934,6 +950,22 @@ export default function Home() {
                 </div>
               )}
               {uniqueCols.length > 0 && (
+                <div className="config-item">
+                  <label className="cfg-label">缩尾处理 Winsorize <span className="cfg-hint">按百分位截断极端值</span></label>
+                  <TagSelector options={uniqueCols} selected={winsorizeVars} onChange={setWinsorizeVars} />
+                  {winsorizeVars.length > 0 && (
+                    <div className="winsor-pcts">
+                      <input className="threshold-input" type="number" value={winsorizeLower} step="0.5" min="0" max="50"
+                        onChange={e => setWinsorizeLower(parseFloat(e.target.value))} placeholder="下分位%（默认1）" />
+                      <span>% – </span>
+                      <input className="threshold-input" type="number" value={winsorizeUpper} step="0.5" min="50" max="100"
+                        onChange={e => setWinsorizeUpper(parseFloat(e.target.value))} placeholder="上分位%（默认99）" />
+                      <span>%</span>
+                    </div>
+                  )}
+                </div>
+              )}
+              {uniqueCols.length > 0 && (
                 <div className="config-item" style={{ gridColumn: "1 / -1" }}>
                   <label className="cfg-label">删除列 <span className="cfg-hint">可选</span></label>
                   <TagSelector options={uniqueCols} selected={dropCols} onChange={setDropCols} />
@@ -984,6 +1016,9 @@ export default function Home() {
                   { type: "ols",         icon: "📈", title: "OLS 回归",    desc: "普通最小二乘 · 稳健/聚类SE" },
                   { type: "panel_fe",    icon: "🏛️", title: "固定效应",   desc: "entity FE · Hausman检验" },
                   { type: "panel_re",    icon: "🎲", title: "随机效应",    desc: "GLS估计 · xtreg, re" },
+                  { type: "panel_balance", icon: "⚖️", title: "面板平衡性检查", desc: "xtdescribe · 检测缺失观测" },
+                  { type: "moderation",  icon: "🔀", title: "调节效应分析", desc: "交互项回归 · 自动中心化" },
+                  { type: "did",         icon: "⏱️", title: "双重差分 DID", desc: "面板双向FE · 平行趋势检验" },
                 ].map(card => (
                   <div key={card.type}
                     className={`acard ${analysisTypes.includes(card.type) ? "active" : ""}`}
@@ -1012,13 +1047,35 @@ export default function Home() {
                       <span className="vl">被解释变量 Y</span>
                       <TagSelector options={cleanedCols} selected={depVar ? [depVar] : []} onChange={v => setDepVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
                     </div>
-                    <div className="var-row">
-                      <span className="vl">解释变量 X</span>
-                      <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={indepVars} onChange={setIndepVars} dtypes={cleanedData?.dtypes} />
-                    </div>
+                    {needsIndepVars && (
+                      <div className="var-row">
+                        <span className="vl">解释变量 X {needsModeration && <span className="vh">调节效应分析取第一个选中的变量作为 X</span>}</span>
+                        <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={indepVars} onChange={setIndepVars} dtypes={cleanedData?.dtypes} />
+                      </div>
+                    )}
+                    {needsModeration && (
+                      <div className="var-row">
+                        <span className="vl">调节变量 M <span className="vh">将与 X 中心化后构造交互项</span></span>
+                        <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={moderatorVar ? [moderatorVar] : []} onChange={v => setModeratorVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                      </div>
+                    )}
+                    {needsDID && (
+                      <>
+                        <div className="var-row">
+                          <span className="vl">处理组变量 Treatment <span className="vh">取值0/1，标识个体是否属于处理组</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={treatmentVar ? [treatmentVar] : []} onChange={v => setTreatmentVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                        </div>
+                        <div className="var-row">
+                          <span className="vl">政策时点 Policy Time <span className="vh">政策实施的年份，≥该值视为政策后</span></span>
+                          <input className="threshold-input" type="number" value={policyTime}
+                            onChange={e => setPolicyTime(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                            placeholder="如 2015" />
+                        </div>
+                      </>
+                    )}
                     <div className="var-row">
                       <span className="vl">控制变量 <span className="vh">可不选</span></span>
-                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && c !== moderatorVar && c !== treatmentVar)} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
                     </div>
                   </>
                 )}
@@ -1126,6 +1183,36 @@ export default function Home() {
                     {analyzeResults.results?.ols && <RegressionTable data={analyzeResults.results.ols} label="OLS 回归结果" />}
                     {analyzeResults.results?.panel_fe && <RegressionTable data={analyzeResults.results.panel_fe} label="固定效应回归（xtreg, fe）" />}
                     {analyzeResults.results?.panel_re && <RegressionTable data={analyzeResults.results.panel_re} label="随机效应回归（xtreg, re）" />}
+                    {analyzeResults.results?.panel_balance && (() => {
+                      const pb = analyzeResults.results.panel_balance;
+                      return (
+                        <div className="result-block">
+                          <div className="tbl-title">面板平衡性检查（xtdescribe）</div>
+                          <div className={pb.is_balanced ? "hausman-box" : "dropped-warn"}>
+                            {pb.n_entities.toLocaleString()} 个体 × {pb.n_times.toLocaleString()} 时间点，
+                            应有 {pb.expected_obs.toLocaleString()} 条观测，实有 {pb.actual_obs.toLocaleString()} 条
+                            <br />{pb.notes}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    {analyzeResults.results?.moderation && <RegressionTable data={analyzeResults.results.moderation} label="调节效应回归（交互项，已中心化）" />}
+                    {analyzeResults.results?.did && (() => {
+                      const d = analyzeResults.results.did;
+                      const pt = d.parallel_trends;
+                      return (
+                        <>
+                          <RegressionTable data={d} label="双重差分 DID（个体+时间双向固定效应）" />
+                          {pt && (
+                            <div className={pt.pass ? "hausman-box" : "dropped-warn"}>
+                              <strong>平行趋势检验</strong>（政策前样本，处理组×时间趋势交互项）：
+                              系数={pt.interaction_coef}，p={pt.p_value}
+                              <br />{pt.conclusion}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                     {analyzeResults.interpretation && (
                       <div className="interp-result">
                         <div className="ir-title">AI 解读</div>
@@ -1148,6 +1235,8 @@ export default function Home() {
         .jheader { border-top: 3px solid #1a1a1a; border-bottom: 1px solid #1a1a1a; padding: 14px 0 10px; margin-bottom: 36px; display: flex; justify-content: space-between; align-items: baseline; }
         .jname { font-family: 'Playfair Display', serif; font-size: 13px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; }
         .jmeta { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a8078; }
+        .jnav-link { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #2c4a8a; text-decoration: none; }
+        .jnav-link:hover { text-decoration: underline; }
         .title-block { margin-bottom: 36px; padding-bottom: 28px; border-bottom: 1px solid #ddd8cc; }
         .title-block h1 { font-family: 'Playfair Display', serif; font-size: 30px; font-weight: 700; margin-bottom: 8px; }
         .title-block h1 span { color: #2c4a8a; }
@@ -1217,6 +1306,8 @@ export default function Home() {
         .radio-btn.sel { background: #2c4a8a; color: white; border-color: #2c4a8a; }
         .radio-btn:hover:not(.sel) { border-color: #2c4a8a; color: #2c4a8a; }
         .threshold-input { margin-top: 8px; width: 160px; background: #f7f5f0; border: 1px solid #ddd8cc; border-radius: 6px; padding: 5px 10px; font-size: 12px; font-family: 'IBM Plex Mono', monospace; outline: none; }
+        .winsor-pcts { display: flex; align-items: center; gap: 4px; margin-top: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8a8078; }
+        .winsor-pcts .threshold-input { margin-top: 0; width: 130px; }
         .tag-sel { display: flex; flex-wrap: wrap; gap: 6px; }
         .vtag { background: #f0ece3; border: 1px solid #ddd8cc; border-radius: 4px; padding: 3px 10px; font-size: 11px; font-family: 'IBM Plex Mono', monospace; cursor: pointer; transition: all 0.15s; user-select: none; }
         .vtag:hover { border-color: #2c4a8a; color: #2c4a8a; }

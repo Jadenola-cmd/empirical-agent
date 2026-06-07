@@ -202,6 +202,14 @@ def _gen_clean_do(merge_cfg: dict, clean_cfg: dict, dfs: dict) -> str:
         lines.append(f"gen ln_{col} = log({col})")
         lines.append(f"* 注：若 {col} 含0或负值，改用: gen ln_{col} = log(1 + {col})")
 
+    # 缩尾处理
+    winsorize_vars = clean_cfg.get("winsorize_vars", [])
+    if winsorize_vars:
+        lo = clean_cfg.get("winsorize_lower", 1)
+        hi = clean_cfg.get("winsorize_upper", 99)
+        lines.append("* 缩尾处理（需 ssc install winsor2）")
+        lines.append(f"winsor2 {' '.join(winsorize_vars)}, cuts({lo} {100 - hi}) replace")
+
     # 异常值
     outlier = clean_cfg.get("outlier", "none")
     threshold = clean_cfg.get("outlier_threshold", 3.0)
