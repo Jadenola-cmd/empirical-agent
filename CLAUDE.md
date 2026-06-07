@@ -120,7 +120,7 @@ empirical-agent/
 ### Session 缓存架构
 - 上传 → `session_id`（`u_` 前缀），清洗 → `cleaned_session_id`（`c_` 前缀），分析用后者恢复 DataFrame
 - 向后兼容：无 session_id 时仍可传 `data` 字段
-- TTL 默认 1 小时，过期需重新上传/清洗
+- TTL 默认 4 小时，过期需重新上传/清洗
 
 ### linearmodels v5.4 兼容
 - `PanelOLS.fit()` 不支持 `check_rank` 参数，不要传

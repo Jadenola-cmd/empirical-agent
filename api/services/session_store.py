@@ -5,7 +5,7 @@ import time
 import pandas as pd
 
 _SESSION_DIR = os.path.join(os.path.dirname(__file__), "..", "_sessions")
-_TTL = 7200  # 2 hours
+_TTL = 14400  # 4 hours
 
 
 def save_session(dfs: dict) -> str:

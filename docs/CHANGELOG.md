@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-06-07（下午）
+
+**合并上线**
+- 将 `feature/winsorize-did-moderation-panel-balance-docs` 分支 fast-forward 合并到 `main`：缩尾处理、面板平衡性检查、调节效应分析、双重差分 DID、`/docs` 文档入口共 5 项新增功能，及批量对数变换的待办补勾，正式上线
+- `session_store.py` 的 session TTL 从 7200 秒（2 小时）延长为 14400 秒（4 小时），同步更正 `CLAUDE.md`/`DEBT.md` 中过时的"硬编码 1 小时"描述（实际此前已是 2 小时，文档未同步）
+
+---
+
 ## 2026-06-07
 
 **新功能**

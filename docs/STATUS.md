@@ -3,23 +3,13 @@
 ## 当前状态（main / 生产环境）
 
 平台已上线，核心功能完整可用：
-- 数据清洗：多文件上传（CSV/xlsx/dta）、合并、缺失值/异常值处理、批量对数变换、列操作、Stata do 生成
-- 实证分析：描述统计、相关系数矩阵、OLS/FE/RE 回归、Hausman 检验、AI 解读
+- 数据清洗：多文件上传（CSV/xlsx/dta）、合并、缺失值/异常值处理、批量对数变换、缩尾处理（Winsorize）、列操作、Stata do 生成
+- 实证分析：描述统计、相关系数矩阵、OLS/FE/RE 回归、Hausman 检验、面板平衡性检查、调节效应分析、双重差分 DID、AI 解读
 - 导出：Excel、Stata do 文件、纯文本
-- Session 缓存架构（2026-06-06 引入），分析阶段不再传输全量数据
+- 用户文档入口 `/docs`：构建期渲染 `docs/用户手册.md`
+- Session 缓存架构（2026-06-06 引入，TTL 4 小时），分析阶段不再传输全量数据
 
-## 已开发完成，待合并上线（分支 `feature/winsorize-did-moderation-panel-balance-docs`）
-
-以下 6 项功能**代码已就绪、已在 Railway 预览环境验证通过（暂无发现 bug）**，随时可合并到 `main` 并同步上线腾讯云 + Vercel/Railway：
-
-- **数据清洗 - 缩尾处理（Winsorize）**：可选列 + 自定义上下分位数，自动生成对应 `winsor2` Stata 片段
-- **批量对数变换**：多列同时生成 `ln_xxx`（核查后发现此前已实现，仅清单未同步勾掉）
-- **面板平衡性检查**：对照 Stata `xtdescribe`，识别非平衡面板及缺失的个体-时间观测组合
-- **调节效应分析**：解释变量与调节变量中心化后构造交互项回归（Aiken & West 1991 标准做法）
-- **双重差分 DID**：基于个体+时间双向固定效应，自动构造处理组×政策期交互项，并附带平行趋势检验
-- **平台内用户文档入口 `/docs`**：构建期渲染 `docs/用户手册.md`，首页头部新增跳转链接
-
-> 合并后的上线动作：腾讯云走 `bash deploy.sh`；Vercel/Railway 两端会各自根据其分支跟踪策略自动构建（详见 `CLAUDE.md` 部署章节）。
+> 2026-06-07：`feature/winsorize-did-moderation-panel-balance-docs` 分支已合并到 `main`（缩尾处理、面板平衡性检查、调节效应分析、双重差分 DID、`/docs` 文档入口共 5 项新增功能 + 批量对数变换补勾）。腾讯云需执行 `bash deploy.sh` 上线；Vercel/Railway 会根据各自分支跟踪策略自动构建（详见 `CLAUDE.md` 部署章节）。
 
 ## 进行中
 
