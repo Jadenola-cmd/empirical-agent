@@ -12,8 +12,8 @@
 **Session TTL 硬编码 1 小时**
 `session_store.py` 中 TTL 为 1 小时，是上线时的临时值。用户放置超 1 小时再分析会提示"会话已过期"。后续可改为配置项或延长。
 
-**Railway 配置未维护**
-`api/index.py`（Mangum 适配器）和 `api/railway.toml` 保留备用，但当前部署在腾讯云，Railway 配置未同步最新改动，不可直接用于生产部署。
+**Railway 不会自动跟着 feature 分支部署**
+平台同时跑在腾讯云（国内）和 Vercel+Railway（国外）两套环境，详见 `CLAUDE.md` 部署章节。Vercel 默认对每个分支/PR 都生成预览部署，但 Railway 默认只监听项目里配置的那一个分支（通常是 `main`），推送 feature 分支不会触发 Railway 自动部署。如需在 Railway 上预览 feature 分支效果，须去 Railway 控制台手动为该分支配置独立 environment。
 
 **缩尾处理生成的 Stata 片段依赖 `winsor2`（非内置命令）**
 清洗步骤生成的 `winsor2 ..., cuts(...) replace` 不是 Stata 自带命令，用户需先在 Stata 里执行 `ssc install winsor2` 才能运行。平台无法控制用户的 Stata 环境，已在生成的 do 片段中加注释提示，但仍可能有用户忽略导致报错。

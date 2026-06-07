@@ -38,8 +38,8 @@ empirical-agent/
 │   └── _app.js           # Next.js App 入口，注入 Vercel Analytics
 ├── api/
 │   ├── main.py           # FastAPI 应用入口，注册路由
-│   ├── index.py          # Serverless 函数入口（备用，Mangum 适配器）
-│   ├── railway.toml      # Railway 部署配置（备用）
+│   ├── index.py          # Serverless 函数入口（Mangum 适配器，Vercel+Railway 环境用）
+│   ├── railway.toml      # Railway 部署配置（Vercel+Railway 环境用）
 │   ├── requirements.txt  # Python 依赖
 │   ├── routes/
 │   │   ├── clean.py      # /api/clean/* 路由
@@ -75,14 +75,24 @@ empirical-agent/
 
 ---
 
-## 部署（腾讯云轻量服务器）
+## 部署（双环境并行）
 
+平台同时运行在两套独立环境，`git push` 后需分别触发：
+
+### 1. 腾讯云轻量服务器（国内，PM2 + Nginx）
 - **项目路径**：`/www/empirical-agent`
 - **PM2 进程**：`empirical-api`（后端 :8000）、`empirical-web`（前端 :3000）
 - **Nginx**：`/api/*` → :8000，`/*` → :3000
 - **迭代更新**：`bash deploy.sh`
 - **手动重建前端**：`NEXT_PUBLIC_API_URL=http://服务器IP npm run build && pm2 restart empirical-web`
 - **手动重启后端**：`pm2 restart empirical-api`
+
+### 2. Vercel + Railway（国外）
+- **前端**：Vercel，托管 Next.js（`vercel.com` 项目设置中配置 `NEXT_PUBLIC_API_URL` 指向 Railway 后端地址）
+- **后端**：Railway，托管 FastAPI（`api/` 目录，`api/index.py` 的 Mangum 适配器 + `api/railway.toml` 用于此环境，并非"备用"）
+- **自动部署差异（推送分支时需注意）**：
+  - Vercel 默认对**每个分支/PR**都自动生成独立预览部署
+  - Railway 默认只监听**项目设置中指定的那一个分支**（通常是 `main`），推送其他分支不会触发部署，除非手动在 Railway 控制台为该分支配置独立 environment
 
 ---
 
