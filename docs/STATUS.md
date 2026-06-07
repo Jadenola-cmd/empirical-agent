@@ -14,7 +14,7 @@
 
 ## 进行中
 
-暂无。
+- [ ] **腾讯云部署受阻，待 2026-06-08 处理**：在服务器执行 `bash deploy.sh`（内部 `git pull`）时报错——服务器本地 `package.json` 有未提交改动、`package-lock.json` 是未跟踪文件，与远程 `main`（含中介/异质性分析等新功能，commit 至 `1557c38`）冲突，`git pull` 中止（`Your local changes to the following files would be overwritten by merge`）。怀疑是此前在服务器上手动跑过 `npm install` 自动改写/生成所致。处理思路：`git diff package.json` 确认是否为自动生成噪音 → `git checkout -- package.json` 放弃本地改动 → `mv package-lock.json package-lock.json.bak` 备份后腾位置 → 重新 `git pull` / `bash deploy.sh`。
 
 ## 待办
 
