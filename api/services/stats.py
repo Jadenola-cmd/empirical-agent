@@ -266,9 +266,17 @@ def run_mediation(
     """
     SIG_P = 0.1
 
-    step1 = run_ols(df, dep_var, [indep_var], control_vars, robust_se, cluster_var)
-    step2 = run_ols(df, mediator_var, [indep_var], control_vars, robust_se, cluster_var)
-    step3 = run_ols(df, dep_var, [indep_var, mediator_var], control_vars, robust_se, cluster_var)
+    # Step2 把中介变量当作被解释变量，而 run_ols 只对解释变量做自动数值转换/虚拟化，
+    # 故须在此先转换为数值型，否则 object dtype 列传入 sm.OLS 会报 "cannot convert the series to <class 'float'>"
+    sub = df.copy()
+    mediator_numeric = pd.to_numeric(sub[mediator_var], errors="coerce")
+    if mediator_numeric.notna().sum() < 10:
+        raise ValueError(f"中介变量 {mediator_var} 不是数值型连续变量，无法用于 Baron-Kenny 中介效应分析（M 须为连续变量）")
+    sub[mediator_var] = mediator_numeric
+
+    step1 = run_ols(sub, dep_var, [indep_var], control_vars, robust_se, cluster_var)
+    step2 = run_ols(sub, mediator_var, [indep_var], control_vars, robust_se, cluster_var)
+    step3 = run_ols(sub, dep_var, [indep_var, mediator_var], control_vars, robust_se, cluster_var)
 
     def _coef(result, var):
         return next((c for c in result["coefficients"] if c["variable"] == var), None)
