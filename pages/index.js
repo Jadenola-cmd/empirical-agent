@@ -516,6 +516,90 @@ function CompareTable({ results }) {
   );
 }
 
+// ─── 中介效应分析：Baron-Kenny 三步合并对比表（对齐论文常见排版，三步并列为列而非堆叠三张表）──
+function MediationTable({ data }) {
+  const [bracketMode, setBracketMode] = useState("t");
+  const { step1, step2, step3, indep_var, mediator_var, control_vars } = data;
+  const steps = [
+    { key: "step1", label: "总效应 c",     data: step1 },
+    { key: "step2", label: "路径 a",       data: step2 },
+    { key: "step3", label: "路径 b / c'",  data: step3 },
+  ];
+
+  function getCoef(stepData, varName) {
+    return stepData?.coefficients?.find(c => c.variable === varName);
+  }
+  function renderCell(coef) {
+    if (!coef) return <td className="col-reg compare-cell">—</td>;
+    const bracket = bracketMode === "se" ? coef.std_error?.toFixed(3) : coef.t_stat?.toFixed(2);
+    return (
+      <td className="col-reg compare-cell">
+        <div>{(coef.coef?.toFixed(3) ?? "—")}<sup className="sig">{coef.sig}</sup></div>
+        <div className="tval">({bracket ?? "—"})</div>
+      </td>
+    );
+  }
+
+  return (
+    <div className="result-block">
+      <div className="tbl-title-row">
+        <span className="tbl-title">中介效应检验结果 · Baron-Kenny 三步法</span>
+        <span className="bracket-toggle">
+          括号内：
+          <button className={`btn-tog ${bracketMode === "t" ? "active" : ""}`} onClick={() => setBracketMode("t")}>t 值</button>
+          <button className={`btn-tog ${bracketMode === "se" ? "active" : ""}`} onClick={() => setBracketMode("se")}>标准误</button>
+        </span>
+      </div>
+      <div className="tbl-scroll">
+        <table className="acad-table reg-tbl compare-tbl">
+          <thead><tr>
+            <th className="col-var"></th>
+            {steps.map((s, i) => (
+              <th key={s.key} className="col-reg">
+                ({i + 1}) {s.data?.dep_var}<br /><span className="depvar">{s.label}</span>
+              </th>
+            ))}
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td className="col-var">{indep_var}</td>
+              {steps.map(s => <React.Fragment key={s.key}>{renderCell(getCoef(s.data, indep_var))}</React.Fragment>)}
+            </tr>
+            <tr>
+              <td className="col-var">{mediator_var}</td>
+              <td className="col-reg compare-cell">—</td>
+              <td className="col-reg compare-cell">—</td>
+              {renderCell(getCoef(step3, mediator_var))}
+            </tr>
+            {(control_vars || []).length > 0 && (
+              <tr className="fe-row">
+                <td className="col-var">控制变量</td>
+                {steps.map(s => <td key={s.key} className="col-reg">Yes</td>)}
+              </tr>
+            )}
+            <tr>
+              <td className="col-var">_cons</td>
+              {steps.map(s => <React.Fragment key={s.key}>{renderCell(getCoef(s.data, "_cons"))}</React.Fragment>)}
+            </tr>
+            <tr className="stat-row">
+              <td className="col-var">N</td>
+              {steps.map(s => <td key={s.key} className="col-reg">{s.data?.n?.toLocaleString()}</td>)}
+            </tr>
+            <tr className="stat-row">
+              <td className="col-var">R²</td>
+              {steps.map(s => <td key={s.key} className="col-reg">{s.data?.r2?.toFixed(3) ?? "—"}</td>)}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="tbl-note">
+        括号内为{bracketMode === "t" ? "t 值" : "标准误"}，***p&lt;0.01, **p&lt;0.05, *p&lt;0.1；
+        模型(1)估计 X→Y 总效应 c，模型(2)估计 X→M 路径 a，模型(3)纳入 M 后估计 X 的直接效应 c' 及 M→Y 路径 b
+      </div>
+    </div>
+  );
+}
+
 // ─── 异质性分析：分组对比表（通用，按 data.groups 动态列数渲染）──
 function HeterogeneityTable({ data }) {
   const [bracketMode, setBracketMode] = useState("t");
@@ -1334,10 +1418,7 @@ export default function Home() {
                       const established = md.mediation_type === "完全中介" || md.mediation_type === "部分中介";
                       return (
                         <>
-                          <div className="tbl-title" style={{ marginTop: 8 }}>中介效应分析 · Baron-Kenny 三步法</div>
-                          <RegressionTable data={md.step1} label={`Step 1：${md.dep_var} ~ ${md.indep_var}（总效应 c）`} />
-                          <RegressionTable data={md.step2} label={`Step 2：${md.mediator_var} ~ ${md.indep_var}（路径 a）`} />
-                          <RegressionTable data={md.step3} label={`Step 3：${md.dep_var} ~ ${md.indep_var} + ${md.mediator_var}（路径 b、直接效应 c'）`} />
+                          <MediationTable data={md} />
                           <div className={established ? "hausman-box" : "dropped-warn"}>
                             <strong>判定结论：{md.mediation_type}</strong>
                             <br />{md.conclusion}
