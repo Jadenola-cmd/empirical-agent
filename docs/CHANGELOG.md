@@ -6,6 +6,9 @@
 
 ## 2026-06-07（晚间）
 
+**Bug 修复**
+- 中介效应分析报错 `cannot convert the series to <class 'float'>`：`run_mediation` 的 step2（M ~ X）把中介变量当作被解释变量传给 `run_ols`，但后者只对解释变量做数值转换/虚拟化、不处理 dep_var；中介变量为 object dtype 时 `sm.OLS` 直接拿字符串 Series 拟合即报错。现已在调用前显式 `pd.to_numeric` 转换，转换后有效值不足则抛出明确提示「中介变量须为数值型连续变量」
+
 **新功能**
 - 实证分析新增两种类型，均接入 `/api/analyze/run`：
   - 中介效应分析（`run_mediation`）：Baron & Kenny (1986) 三步法，依次估计 `Y~X`（总效应 c）、`M~X`（路径 a）、`Y~X+M`（路径 b、直接效应 c'），按 p<0.1 自动判定"无中介/部分中介/完全中介"并给出结论文案
