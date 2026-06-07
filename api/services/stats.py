@@ -245,6 +245,90 @@ def run_moderation(
     return result
 
 
+def run_mediation(
+    df: pd.DataFrame,
+    dep_var: str,
+    indep_var: str,
+    mediator_var: str,
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    """中介效应分析：Baron & Kenny (1986) 三步法，三步均复用 run_ols。
+    step1: Y ~ X + controls       → 路径 c（总效应）
+    step2: M ~ X + controls       → 路径 a
+    step3: Y ~ X + M + controls   → 路径 b，及路径 c'（直接效应）
+    判定规则（按 tasks.md 既定口径，显著性阈值 p<0.1）：
+      - a 不显著 → 无中介效应
+      - a 显著且 c' 不显著 → 完全中介
+      - a 显著、c' 显著但 |c'| < |c| → 部分中介
+      - 否则 → 未观察到中介迹象
+    """
+    SIG_P = 0.1
+
+    step1 = run_ols(df, dep_var, [indep_var], control_vars, robust_se, cluster_var)
+    step2 = run_ols(df, mediator_var, [indep_var], control_vars, robust_se, cluster_var)
+    step3 = run_ols(df, dep_var, [indep_var, mediator_var], control_vars, robust_se, cluster_var)
+
+    def _coef(result, var):
+        return next((c for c in result["coefficients"] if c["variable"] == var), None)
+
+    c_total = _coef(step1, indep_var)
+    a_path = _coef(step2, indep_var)
+    b_path = _coef(step3, mediator_var)
+    c_prime = _coef(step3, indep_var)
+
+    a_sig = a_path is not None and a_path["p_value"] < SIG_P
+    c_prime_sig = c_prime is not None and c_prime["p_value"] < SIG_P
+
+    if not a_sig:
+        mediation_type = "无中介效应"
+        conclusion = (
+            f"路径 a（{indep_var} → {mediator_var}）不显著"
+            f"（系数={a_path['coef'] if a_path else '—'}，p={a_path['p_value'] if a_path else '—'}），"
+            f"{mediator_var} 不构成中介变量"
+        )
+    elif not c_prime_sig:
+        mediation_type = "完全中介"
+        conclusion = (
+            f"路径 a 显著，且控制 {mediator_var} 后 {indep_var} 的直接效应 c' 不再显著"
+            f"（c'={c_prime['coef'] if c_prime else '—'}，p={c_prime['p_value'] if c_prime else '—'}），"
+            f"{mediator_var} 在 {indep_var} → {dep_var} 的影响路径中起完全中介作用"
+        )
+    elif c_total is not None and c_prime is not None and abs(c_prime["coef"]) < abs(c_total["coef"]):
+        mediation_type = "部分中介"
+        conclusion = (
+            f"路径 a 显著，{indep_var} 的直接效应 c' 虽仍显著但系数绝对值较总效应 c 减小"
+            f"（c={c_total['coef']:.4f} → c'={c_prime['coef']:.4f}），"
+            f"{mediator_var} 在该路径中起部分中介作用"
+        )
+    else:
+        mediation_type = "无中介迹象"
+        conclusion = (
+            f"路径 a 显著，但控制 {mediator_var} 后 {indep_var} 的系数未减小"
+            f"（c={c_total['coef'] if c_total else '—'} → c'={c_prime['coef'] if c_prime else '—'}），"
+            f"未观察到 {mediator_var} 的中介效应迹象"
+        )
+
+    return {
+        "type": "mediation",
+        "dep_var": dep_var,
+        "indep_var": indep_var,
+        "mediator_var": mediator_var,
+        "control_vars": control_vars,
+        "step1": step1,
+        "step2": step2,
+        "step3": step3,
+        "paths": {"c_total": c_total, "a": a_path, "b": b_path, "c_prime": c_prime},
+        "mediation_type": mediation_type,
+        "conclusion": conclusion,
+        "notes": (
+            "Baron & Kenny (1986) 三步法：① Y~X（c）② M~X（a）③ Y~X+M（b、c'）；"
+            "显著性按 p<0.1 判定。该方法对样本量和效应量较敏感，建议结合 Bootstrap 法或 Sobel 检验进一步验证"
+        ),
+    }
+
+
 def run_did(
     df: pd.DataFrame,
     dep_var: str,
@@ -520,4 +604,91 @@ def run_panel(
         "categorical_vars": list(dummy_info.keys()),
         "dummy_vars":       dummy_vars_flat,
         "notes":            f"括号内为t值，{cov_type}标准误，***p<0.01, **p<0.05, *p<0.1。{omit_note}{cat_note}",
+    }
+
+
+def run_heterogeneity(
+    df: pd.DataFrame,
+    dep_var: str,
+    indep_vars: List[str],
+    control_vars: List[str] = [],
+    group_var: str = None,
+    group_method: str = "median",
+    entity_var: Optional[str] = None,
+    time_var: Optional[str] = None,
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    """异质性分析：按分组变量拆分样本，对每组分别估计同一回归模型并列对比，
+    是论文"进一步检验异质性"环节的标配做法。
+    group_method: median（按中位数二分）| quantile（按三分位三分）| category（按类别取值分组，至多 6 组）
+    若提供 entity_var/time_var 则对每组调用 run_panel（FE），否则调用 run_ols。
+    分组阈值（中位数/分位数）基于全样本计算，保证各组划分标准一致、可比。
+    """
+    if group_var not in df.columns:
+        raise ValueError(f"分组变量 {group_var} 不存在")
+
+    use_panel = bool(entity_var and time_var)
+    group_series = df[group_var]
+
+    buckets = []  # [(label, boolean mask)]
+    if group_method == "category":
+        cats = sorted(group_series.dropna().unique().tolist(), key=lambda v: str(v))
+        if len(cats) > 6:
+            raise ValueError(f"分组变量 {group_var} 取值数量为 {len(cats)} 个，超过 6 个上限，不适合按类别分组（建议改用中位数或三分位）")
+        if len(cats) < 2:
+            raise ValueError(f"分组变量 {group_var} 仅有 {len(cats)} 个取值，无法分组对比")
+        for c in cats:
+            buckets.append((f"{group_var} = {c}", group_series == c))
+        method_note = "按类别取值分组"
+    else:
+        gnum = pd.to_numeric(group_series, errors="coerce")
+        if gnum.notna().sum() < 10:
+            raise ValueError(f"分组变量 {group_var} 转换为数值后有效样本不足，无法按{('三分位' if group_method == 'quantile' else '中位数')}分组")
+        if group_method == "quantile":
+            q1, q2 = gnum.quantile(1 / 3), gnum.quantile(2 / 3)
+            buckets = [
+                (f"低分位组（{group_var} ≤ {q1:.3g}）", gnum <= q1),
+                (f"中间组（{q1:.3g} < {group_var} ≤ {q2:.3g}）", (gnum > q1) & (gnum <= q2)),
+                (f"高分位组（{group_var} > {q2:.3g}）", gnum > q2),
+            ]
+            method_note = "按三分位分为低/中/高三组"
+        else:
+            med = gnum.median()
+            buckets = [
+                (f"低于中位数组（{group_var} ≤ {med:.3g}）", gnum <= med),
+                (f"高于中位数组（{group_var} > {med:.3g}）", gnum > med),
+            ]
+            method_note = "按中位数二分为高低两组"
+
+    groups = []
+    for label, mask in buckets:
+        sub = df[mask.fillna(False)]
+        if len(sub) < 10:
+            groups.append({"label": label, "n": len(sub), "error": f"样本量过小（{len(sub)} 条，至少需要 10 条），跳过估计"})
+            continue
+        try:
+            if use_panel:
+                r = run_panel(
+                    sub, dep_var, indep_vars, control_vars,
+                    entity_var=entity_var, time_var=time_var, model_type="fe",
+                    robust_se=robust_se, cluster_var=cluster_var,
+                )
+            else:
+                r = run_ols(sub, dep_var, indep_vars, control_vars, robust_se=robust_se, cluster_var=cluster_var)
+            groups.append({"label": label, "n": len(sub), "result": r})
+        except Exception as e:
+            groups.append({"label": label, "n": len(sub), "error": str(e)})
+
+    return {
+        "type": "heterogeneity",
+        "dep_var": dep_var,
+        "group_var": group_var,
+        "group_method": group_method,
+        "model_type": "fe" if use_panel else "ols",
+        "groups": groups,
+        "notes": (
+            f"按 {group_var}（{method_note}）拆分样本分别估计{'固定效应（xtreg, fe）' if use_panel else 'OLS'}模型，"
+            "对照各组核心解释变量系数的方向、大小及显著性差异，是检验异质性的标准做法；分组阈值基于全样本计算，保证各组可比"
+        ),
     }

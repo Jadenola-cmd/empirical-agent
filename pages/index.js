@@ -304,6 +304,23 @@ function CorrelationTable({ data }) {
   );
 }
 
+// ─── 分析方法注册表 ───────────────────────────────────
+// 新增一种分析方法：在此追加一条配置即可，卡片分组、勾选逻辑均由它驱动，
+// 无需在渲染代码里新增 if 分支（category 决定卡片分组，UI 按其在数组中
+// 首次出现的顺序自动生成分组标签，不写死分组列表）。
+const ANALYSIS_REGISTRY = [
+  { type: "descriptive",   icon: "📊", title: "描述性统计",   desc: "均值/SD/分布 · 对齐 Stata summarize", category: "数据探索" },
+  { type: "correlation",   icon: "🔗", title: "相关系数矩阵", desc: "Pearson + 显著性 · 对齐 Stata pwcorr", category: "数据探索" },
+  { type: "panel_balance", icon: "⚖️", title: "面板平衡性检查", desc: "xtdescribe · 检测缺失观测", category: "数据探索" },
+  { type: "ols",           icon: "📈", title: "OLS 回归",     desc: "普通最小二乘 · 稳健/聚类SE", category: "主回归分析" },
+  { type: "panel_fe",      icon: "🏛️", title: "固定效应",    desc: "entity FE · Hausman检验", category: "主回归分析" },
+  { type: "panel_re",      icon: "🎲", title: "随机效应",     desc: "GLS估计 · xtreg, re", category: "主回归分析" },
+  { type: "did",           icon: "⏱️", title: "双重差分 DID", desc: "面板双向FE · 平行趋势检验", category: "因果识别" },
+  { type: "moderation",    icon: "🔀", title: "调节效应分析", desc: "交互项回归 · 自动中心化", category: "机制检验" },
+  { type: "mediation",     icon: "🧩", title: "中介效应分析", desc: "Baron-Kenny 三步法", category: "机制检验" },
+  { type: "heterogeneity", icon: "🧬", title: "异质性分析",   desc: "分组回归对比", category: "稳健性检验" },
+];
+
 function RegressionTable({ data, label, bracketMode = "t" }) {
   if (!data?.coefficients?.length) return null;
   const dummySet = new Set(data.dummy_vars || []);
@@ -499,6 +516,84 @@ function CompareTable({ results }) {
   );
 }
 
+// ─── 异质性分析：分组对比表（通用，按 data.groups 动态列数渲染）──
+function HeterogeneityTable({ data }) {
+  const [bracketMode, setBracketMode] = useState("t");
+  if (!data?.groups?.length) return null;
+  const valid = data.groups.filter(g => g.result?.coefficients?.length);
+  if (!valid.length) return null;
+
+  const seenVars = new Set();
+  const mainVars = [];
+  valid.forEach(g => g.result.coefficients.forEach(c => {
+    if (c.variable !== "_cons" && !seenVars.has(c.variable)) { seenVars.add(c.variable); mainVars.push(c.variable); }
+  }));
+  const hasCons = valid.some(g => g.result.coefficients.some(c => c.variable === "_cons"));
+  const isPanel = data.model_type === "fe";
+
+  function getCoef(g, v) { return g.result?.coefficients?.find(c => c.variable === v); }
+  function renderCell(coef) {
+    if (!coef) return <td className="col-reg compare-cell">—</td>;
+    const bracket = bracketMode === "se" ? coef.std_error?.toFixed(3) : coef.t_stat?.toFixed(2);
+    return (
+      <td className="col-reg compare-cell">
+        <div>{(coef.coef?.toFixed(3) ?? "—")}<sup className="sig">{coef.sig}</sup></div>
+        <div className="tval">({bracket ?? "—"})</div>
+      </td>
+    );
+  }
+
+  return (
+    <div className="result-block">
+      <div className="tbl-title-row">
+        <span className="tbl-title">异质性分析 · 分组对比（按 {data.group_var} 拆分）</span>
+        <span className="bracket-toggle">
+          括号内：
+          <button className={`btn-tog ${bracketMode === "t" ? "active" : ""}`} onClick={() => setBracketMode("t")}>t 值</button>
+          <button className={`btn-tog ${bracketMode === "se" ? "active" : ""}`} onClick={() => setBracketMode("se")}>标准误</button>
+        </span>
+      </div>
+      <div className="tbl-scroll">
+        <table className="acad-table reg-tbl compare-tbl">
+          <thead><tr>
+            <th className="col-var"></th>
+            {data.groups.map((g, i) => (
+              <th key={i} className="col-reg">({i + 1}) {g.label}<br /><span className="depvar">N = {g.n?.toLocaleString?.() ?? g.n}</span></th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {mainVars.map(v => (
+              <tr key={v}>
+                <td className="col-var">{v}</td>
+                {data.groups.map((g, i) => <React.Fragment key={i}>{renderCell(getCoef(g, v))}</React.Fragment>)}
+              </tr>
+            ))}
+            {hasCons && (
+              <tr>
+                <td className="col-var">_cons</td>
+                {data.groups.map((g, i) => <React.Fragment key={i}>{renderCell(getCoef(g, "_cons"))}</React.Fragment>)}
+              </tr>
+            )}
+            <tr className="stat-row">
+              <td className="col-var">N</td>
+              {data.groups.map((g, i) => <td key={i} className="col-reg">{g.result ? (g.n?.toLocaleString?.() ?? g.n) : (g.error || "—")}</td>)}
+            </tr>
+            <tr className="stat-row">
+              <td className="col-var">{isPanel ? "R² (within)" : "R²"}</td>
+              {data.groups.map((g, i) => (
+                <td key={i} className="col-reg">
+                  {isPanel ? (g.result?.r2_within?.toFixed(3) ?? "—") : (g.result?.r2?.toFixed(3) ?? "—")}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="tbl-note">{data.notes}</div>
+    </div>
+  );
+}
+
 function TagSelector({ options, selected, onChange, single, dtypes }) {
   function dtBadge(col) {
     if (!dtypes) return null;
@@ -568,6 +663,9 @@ export default function Home() {
   const [moderatorVar, setModeratorVar] = useState("");
   const [treatmentVar, setTreatmentVar] = useState("");
   const [policyTime, setPolicyTime] = useState("");
+  const [mediatorVar, setMediatorVar] = useState("");
+  const [groupVar, setGroupVar] = useState("");
+  const [groupMethod, setGroupMethod] = useState("median");
   const [analyzeResults, setAnalyzeResults] = useState(null);
   const [doAnalyze, setDoAnalyze] = useState("");
   const [layer2Loading, setLayer2Loading] = useState(false);
@@ -736,6 +834,9 @@ export default function Home() {
         moderator_var: moderatorVar || null,
         treatment_var: treatmentVar || null,
         policy_time: policyTime === "" ? null : policyTime,
+        mediator_var: mediatorVar || null,
+        group_var: groupVar || null,
+        group_method: groupMethod,
         interpret,
         custom_question: customQ || null,
       };
@@ -765,10 +866,12 @@ export default function Home() {
   const uniqueMappedCols = [...new Set(mappedCols)];
   const cleanedCols = cleanedData?.columns || [];
   const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did"].includes(t));
-  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "did"].includes(t));
+  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "did", "heterogeneity"].includes(t));
   const needsModeration = analysisTypes.includes("moderation");
+  const needsMediation = analysisTypes.includes("mediation");
   const needsDID = analysisTypes.includes("did");
-  const needsIndepVars = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation"].includes(t));
+  const needsHeterogeneity = analysisTypes.includes("heterogeneity");
+  const needsIndepVars = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "heterogeneity"].includes(t));
   const sectionNum = (base) => filePreviews.length > 1 ? base : base - 1;
 
   return (
@@ -1008,29 +1111,31 @@ export default function Home() {
 
             {/* 01 分析方法 */}
             <div className="section">
-              <div className="sh"><span className="sn">01</span><span className="st">选择分析方法</span><span className="shint">可多选</span></div>
-              <div className="analysis-grid">
-                {[
-                  { type: "descriptive", icon: "📊", title: "描述性统计", desc: "均值/SD/分布 · 对齐 Stata summarize" },
-                  { type: "correlation", icon: "🔗", title: "相关系数矩阵", desc: "Pearson + 显著性 · 对齐 Stata pwcorr" },
-                  { type: "ols",         icon: "📈", title: "OLS 回归",    desc: "普通最小二乘 · 稳健/聚类SE" },
-                  { type: "panel_fe",    icon: "🏛️", title: "固定效应",   desc: "entity FE · Hausman检验" },
-                  { type: "panel_re",    icon: "🎲", title: "随机效应",    desc: "GLS估计 · xtreg, re" },
-                  { type: "panel_balance", icon: "⚖️", title: "面板平衡性检查", desc: "xtdescribe · 检测缺失观测" },
-                  { type: "moderation",  icon: "🔀", title: "调节效应分析", desc: "交互项回归 · 自动中心化" },
-                  { type: "did",         icon: "⏱️", title: "双重差分 DID", desc: "面板双向FE · 平行趋势检验" },
-                ].map(card => (
-                  <div key={card.type}
-                    className={`acard ${analysisTypes.includes(card.type) ? "active" : ""}`}
-                    onClick={() => setAnalysisTypes(prev =>
-                      prev.includes(card.type) ? prev.filter(t => t !== card.type) : [...prev, card.type]
-                    )}>
-                    <div className="ci">{card.icon}</div>
-                    <div className="ct">{card.title}</div>
-                    <div className="cd">{card.desc}</div>
+              <div className="sh"><span className="sn">01</span><span className="st">选择分析方法</span><span className="shint">可多选 · 按类别分组</span></div>
+              {/* 卡片按 ANALYSIS_REGISTRY 中的 category 分组渲染：
+                  分组顺序、标签均由注册表数据驱动，新增/调整分类无需改这段渲染逻辑 */}
+              {(() => {
+                const categories = [];
+                ANALYSIS_REGISTRY.forEach(e => { if (!categories.includes(e.category)) categories.push(e.category); });
+                return categories.map(cat => (
+                  <div key={cat} className="acat-block">
+                    <div className="acat-label"><span>{cat}</span></div>
+                    <div className="analysis-grid">
+                      {ANALYSIS_REGISTRY.filter(e => e.category === cat).map(card => (
+                        <div key={card.type}
+                          className={`acard ${analysisTypes.includes(card.type) ? "active" : ""}`}
+                          onClick={() => setAnalysisTypes(prev =>
+                            prev.includes(card.type) ? prev.filter(t => t !== card.type) : [...prev, card.type]
+                          )}>
+                          <div className="ci">{card.icon}</div>
+                          <div className="ct">{card.title}</div>
+                          <div className="cd">{card.desc}</div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                ))}
-              </div>
+                ));
+              })()}
             </div>
 
             {/* 02 变量配置 */}
@@ -1049,7 +1154,12 @@ export default function Home() {
                     </div>
                     {needsIndepVars && (
                       <div className="var-row">
-                        <span className="vl">解释变量 X {needsModeration && <span className="vh">调节效应分析取第一个选中的变量作为 X</span>}</span>
+                        <span className="vl">
+                          解释变量 X
+                          {needsModeration && needsMediation && <span className="vh">调节/中介效应分析均取第一个选中的变量作为 X</span>}
+                          {needsModeration && !needsMediation && <span className="vh">调节效应分析取第一个选中的变量作为 X</span>}
+                          {!needsModeration && needsMediation && <span className="vh">中介效应分析取第一个选中的变量作为 X</span>}
+                        </span>
                         <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={indepVars} onChange={setIndepVars} dtypes={cleanedData?.dtypes} />
                       </div>
                     )}
@@ -1058,6 +1168,28 @@ export default function Home() {
                         <span className="vl">调节变量 M <span className="vh">将与 X 中心化后构造交互项</span></span>
                         <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={moderatorVar ? [moderatorVar] : []} onChange={v => setModeratorVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
                       </div>
+                    )}
+                    {needsMediation && (
+                      <div className="var-row">
+                        <span className="vl">中介变量 M <span className="vh">Baron-Kenny 三步法：依次估计 Y~X、M~X、Y~X+M</span></span>
+                        <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={mediatorVar ? [mediatorVar] : []} onChange={v => setMediatorVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                      </div>
+                    )}
+                    {needsHeterogeneity && (
+                      <>
+                        <div className="var-row">
+                          <span className="vl">分组变量 Group <span className="vh">按其取值将样本拆分为多组，分别估计同一回归并列对比</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={groupVar ? [groupVar] : []} onChange={v => setGroupVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                        </div>
+                        <div className="var-row">
+                          <span className="vl">分组方式 <span className="vh">分组阈值基于全样本计算，保证各组可比</span></span>
+                          <div className="radio-group">
+                            {[["median", "中位数二分"], ["quantile", "三分位三分"], ["category", "按类别取值（≤6组）"]].map(([v, l]) => (
+                              <label key={v} className={`radio-btn ${groupMethod === v ? "sel" : ""}`} onClick={() => setGroupMethod(v)}>{l}</label>
+                            ))}
+                          </div>
+                        </div>
+                      </>
                     )}
                     {needsDID && (
                       <>
@@ -1075,7 +1207,7 @@ export default function Home() {
                     )}
                     <div className="var-row">
                       <span className="vl">控制变量 <span className="vh">可不选</span></span>
-                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && c !== moderatorVar && c !== treatmentVar)} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && c !== moderatorVar && c !== treatmentVar && c !== mediatorVar && c !== groupVar)} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
                     </div>
                   </>
                 )}
@@ -1197,6 +1329,24 @@ export default function Home() {
                       );
                     })()}
                     {analyzeResults.results?.moderation && <RegressionTable data={analyzeResults.results.moderation} label="调节效应回归（交互项，已中心化）" />}
+                    {analyzeResults.results?.mediation && (() => {
+                      const md = analyzeResults.results.mediation;
+                      const established = md.mediation_type === "完全中介" || md.mediation_type === "部分中介";
+                      return (
+                        <>
+                          <div className="tbl-title" style={{ marginTop: 8 }}>中介效应分析 · Baron-Kenny 三步法</div>
+                          <RegressionTable data={md.step1} label={`Step 1：${md.dep_var} ~ ${md.indep_var}（总效应 c）`} />
+                          <RegressionTable data={md.step2} label={`Step 2：${md.mediator_var} ~ ${md.indep_var}（路径 a）`} />
+                          <RegressionTable data={md.step3} label={`Step 3：${md.dep_var} ~ ${md.indep_var} + ${md.mediator_var}（路径 b、直接效应 c'）`} />
+                          <div className={established ? "hausman-box" : "dropped-warn"}>
+                            <strong>判定结论：{md.mediation_type}</strong>
+                            <br />{md.conclusion}
+                            <br /><span style={{ fontSize: 11, opacity: 0.75 }}>{md.notes}</span>
+                          </div>
+                        </>
+                      );
+                    })()}
+                    {analyzeResults.results?.heterogeneity && <HeterogeneityTable data={analyzeResults.results.heterogeneity} />}
                     {analyzeResults.results?.did && (() => {
                       const d = analyzeResults.results.did;
                       const pt = d.parallel_trends;
@@ -1338,6 +1488,11 @@ export default function Home() {
         .prev-table tr:last-child td { border-bottom: none; }
         .prev-table tr:hover td { background: rgba(44,74,138,0.03); }
         .divider { border: none; border-top: 2px solid #ddd8cc; margin: 36px 0; }
+        .acat-block { margin-bottom: 16px; }
+        .acat-block:last-child { margin-bottom: 0; }
+        .acat-label { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+        .acat-label span { font-size: 11px; font-weight: 700; letter-spacing: 2px; color: #2c4a8a; font-family: 'IBM Plex Mono', monospace; text-transform: uppercase; white-space: nowrap; }
+        .acat-label::after { content: ''; flex: 1; height: 1px; background: #ddd8cc; }
         .analysis-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
         @media (max-width: 700px) { .analysis-grid { grid-template-columns: 1fr 1fr; } }
         .acard { background: #fffef9; border: 1.5px solid #ddd8cc; border-radius: 8px; padding: 14px 16px; cursor: pointer; transition: all 0.15s; position: relative; user-select: none; }

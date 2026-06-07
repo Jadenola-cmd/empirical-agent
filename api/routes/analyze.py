@@ -10,7 +10,9 @@ from services.stats import (
     run_panel,
     run_panel_balance,
     run_moderation,
+    run_mediation,
     run_did,
+    run_heterogeneity,
 )
 from services.interpreter import interpret_results
 from services.session_store import load_cleaned
@@ -45,6 +47,9 @@ class AnalysisRequest(BaseModel):
     moderator_var: Optional[str] = None
     treatment_var: Optional[str] = None
     policy_time: Optional[float] = None
+    mediator_var: Optional[str] = None
+    group_var: Optional[str] = None
+    group_method: Optional[str] = "median"
     interpret: Optional[bool] = False
     custom_question: Optional[str] = None
 
@@ -107,6 +112,37 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
         lines.append("* 平行趋势检验（仅用政策前样本）：")
         lines.append(f"reg {req.dep_var} {req.treatment_var} c.{req.time_var}##c.{req.treatment_var} if {req.time_var} < {pt}")
 
+    if "mediation" in req.analysis_types and req.dep_var and req.indep_vars and req.mediator_var:
+        x, m = req.indep_vars[0], req.mediator_var
+        all_x = [x] + (req.control_vars or [])
+        all_xm = [x, m] + (req.control_vars or [])
+        se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
+        lines.append("* 中介效应分析（Baron & Kenny 1986 三步法）：")
+        lines.append(f"reg {req.dep_var} {' '.join(all_x)}{se_opt}  // step1: 总效应 c")
+        lines.append(f"reg {m} {' '.join(all_x)}{se_opt}  // step2: 路径 a")
+        lines.append(f"reg {req.dep_var} {' '.join(all_xm)}{se_opt}  // step3: 路径 b 与直接效应 c'")
+
+    if "heterogeneity" in req.analysis_types and req.dep_var and req.indep_vars and req.group_var:
+        all_x = (req.indep_vars or []) + (req.control_vars or [])
+        se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
+        method = req.group_method or "median"
+        lines.append("* 异质性分析（按分组变量拆分样本分别估计）：")
+        if method == "category":
+            lines.append(f"levelsof {req.group_var}, local(grps)")
+            lines.append(f"foreach g of local grps {{")
+            lines.append(f"    reg {req.dep_var} {' '.join(all_x)} if {req.group_var} == `g'{se_opt}")
+            lines.append(f"}}")
+        elif method == "quantile":
+            lines.append(f"xtile _grp = {req.group_var}, nq(3)")
+            lines.append(f"forvalues g = 1/3 {{")
+            lines.append(f"    reg {req.dep_var} {' '.join(all_x)} if _grp == `g'{se_opt}")
+            lines.append(f"}}")
+        else:
+            lines.append(f"summarize {req.group_var}, detail")
+            lines.append(f"gen _grp_high = ({req.group_var} > r(p50))")
+            lines.append(f"reg {req.dep_var} {' '.join(all_x)} if _grp_high == 0{se_opt}  // 低于中位数组")
+            lines.append(f"reg {req.dep_var} {' '.join(all_x)} if _grp_high == 1{se_opt}  // 高于中位数组")
+
     if "panel_re" in req.analysis_types and req.dep_var:
         all_x = (req.indep_vars or []) + (req.control_vars or [])
         lines.append(f"xtset {req.entity_var} {req.time_var}")
@@ -139,7 +175,7 @@ async def run_analysis(req: AnalysisRequest):
             raise HTTPException(status_code=400, detail=f"变量不存在：{missing_cols}")
         # Bug3 Fix: 面板分析必须保留 entity_var / time_var，即使用户没有在 variables 里选它们
         keep = list(req.variables)
-        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did")):
+        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did", "heterogeneity")):
             if req.entity_var and req.entity_var not in keep:
                 keep.append(req.entity_var)
             if req.time_var and req.time_var not in keep:
@@ -148,6 +184,10 @@ async def run_analysis(req: AnalysisRequest):
             keep.append(req.treatment_var)
         if "moderation" in req.analysis_types and req.moderator_var and req.moderator_var not in keep:
             keep.append(req.moderator_var)
+        if "mediation" in req.analysis_types and req.mediator_var and req.mediator_var not in keep:
+            keep.append(req.mediator_var)
+        if "heterogeneity" in req.analysis_types and req.group_var and req.group_var not in keep:
+            keep.append(req.group_var)
         df = df[keep]
 
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
@@ -196,6 +236,43 @@ async def run_analysis(req: AnalysisRequest):
                     indep_var=req.indep_vars[0],
                     moderator_var=req.moderator_var,
                     control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
+                )
+
+            elif analysis_type == "mediation":
+                if not req.dep_var:
+                    raise ValueError("中介效应分析需要指定被解释变量 dep_var")
+                if not req.indep_vars:
+                    raise ValueError("中介效应分析需要指定解释变量 X（取第一个）")
+                if not req.mediator_var:
+                    raise ValueError("中介效应分析需要指定中介变量 mediator_var")
+                results["mediation"] = run_mediation(
+                    df,
+                    dep_var=req.dep_var,
+                    indep_var=req.indep_vars[0],
+                    mediator_var=req.mediator_var,
+                    control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
+                )
+
+            elif analysis_type == "heterogeneity":
+                if not req.dep_var:
+                    raise ValueError("异质性分析需要指定被解释变量 dep_var")
+                if not req.indep_vars:
+                    raise ValueError("异质性分析需要指定核心解释变量 indep_vars")
+                if not req.group_var:
+                    raise ValueError("异质性分析需要指定分组变量 group_var")
+                results["heterogeneity"] = run_heterogeneity(
+                    df,
+                    dep_var=req.dep_var,
+                    indep_vars=req.indep_vars or [],
+                    control_vars=req.control_vars or [],
+                    group_var=req.group_var,
+                    group_method=req.group_method or "median",
+                    entity_var=req.entity_var if req.entity_var else None,
+                    time_var=req.time_var if req.time_var else None,
                     robust_se=req.robust_se,
                     cluster_var=req.cluster_var,
                 )

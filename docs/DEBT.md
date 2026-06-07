@@ -18,6 +18,9 @@
 **缩尾处理生成的 Stata 片段依赖 `winsor2`（非内置命令）**
 清洗步骤生成的 `winsor2 ..., cuts(...) replace` 不是 Stata 自带命令，用户需先在 Stata 里执行 `ssc install winsor2` 才能运行。平台无法控制用户的 Stata 环境，已在生成的 do 片段中加注释提示，但仍可能有用户忽略导致报错。
 
+**中介效应分析仅实现 Baron-Kenny 三步法，显著性阈值 p<0.1**
+`run_mediation` 按 Baron & Kenny (1986) 经典三步法判定中介类型（无/部分/完全），未实现 Bootstrap 或 Sobel 检验。该方法对样本量和效应量较敏感，结果中已提示用户结合其他方法进一步验证。后续如有需要可加 Bootstrap 选项。
+
 ---
 
 ## 前端
