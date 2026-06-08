@@ -10,7 +10,7 @@
 - 用户文档入口 `/docs`：构建期渲染 `docs/用户手册.md`
 - Session 缓存架构（2026-06-06 引入，TTL 4 小时），分析阶段不再传输全量数据
 
-> 2026-06-08：新增 Sobel 检验（中介效应补充验证）、工具变量法 2SLS（含弱工具变量/过度识别检验）、主成分分析 PCA、数据清洗"删除重复值"四项新功能；修正 PCA 结果备注中"保留依据"前后矛盾的描述；前端"使用文档"入口改为更醒目的胶囊按钮，`/docs` 页面新增联系方式二维码占位区块（待用户后续放入真实图片 `public/contact-qr.png`）；修复 `deploy.sh` 缺少 `npm install` 导致前端新依赖未安装、构建报 `Module not found` 的问题，腾讯云部署已恢复正常。当前改动在 `feature/sobel-iv-pca` 分支，待 Vercel/Railway 预览验证后合并 `main`。
+> 2026-06-08：新增 Sobel 检验（中介效应补充验证）、工具变量法 2SLS（含弱工具变量/过度识别检验）、主成分分析 PCA、数据清洗"删除重复值"四项新功能；PCA 补充适用性检验（KMO + Bartlett 球形检验）与综合得分（按方差贡献率加权汇总主成分得分）；修正 PCA 结果备注中"保留依据"前后矛盾的描述；前端"使用文档"入口改为更醒目的胶囊按钮，`/docs` 页面新增联系方式二维码占位区块（待用户后续放入真实图片 `public/contact-qr.png`）；修复 `deploy.sh` 缺少 `npm install` 导致前端新依赖未安装、构建报 `Module not found` 的问题，腾讯云部署已恢复正常。当前改动在 `feature/sobel-iv-pca` 分支，待 Vercel/Railway 预览验证后合并 `main`。
 
 ## 进行中
 

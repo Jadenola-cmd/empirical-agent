@@ -161,7 +161,12 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
 
     if "pca" in req.analysis_types and req.variables:
         cov_opt = "" if (req.standardize is None or req.standardize) else ", covariance"
+        lines.append(f"factortest {' '.join(req.variables)}  // KMO 与 Bartlett 球形检验（需 ssc install factortest），用于判断变量是否适合做主成分分析")
         lines.append(f"pca {' '.join(req.variables)}{cov_opt}")
+        lines.append("predict pc1 pc2 pc3 pc4 pc5 pc6  // 按需保留的主成分个数调整变量名数量")
+        lines.append("* 综合得分 = 各保留主成分按方差贡献率加权汇总，例如保留2个主成分：")
+        lines.append("* gen comp_score = (w1/(w1+w2))*pc1 + (w2/(w1+w2))*pc2")
+        lines.append("* 其中 w1、w2 为 pca 输出中各主成分的方差贡献率（Proportion）")
 
     if "panel_re" in req.analysis_types and req.dep_var:
         all_x = (req.indep_vars or []) + (req.control_vars or [])

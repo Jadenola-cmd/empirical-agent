@@ -756,9 +756,21 @@ function IVTable({ data }) {
 // ─── 主成分分析 PCA：方差贡献率表 + 载荷表 ──
 function PCATable({ data }) {
   if (!data?.components?.length) return null;
+  const su = data.suitability;
+  const cs = data.composite_score;
   return (
     <div className="result-block">
       <div className="tbl-title">主成分分析结果（{data.matrix_label}，N={data.n?.toLocaleString()}）</div>
+      {su && (
+        <div className={(su.kmo != null && su.kmo >= 0.6 && su.bartlett_sig) ? "hausman-box" : "dropped-warn"} style={{ marginBottom: 16 }}>
+          <strong>适用性检验</strong>
+          <br />KMO 抽样适当性度量 = {su.kmo != null ? su.kmo.toFixed(4) : "—"}（{su.kmo_label}）
+          <br />Bartlett 球形检验：{su.bartlett_chi2 != null
+            ? <>χ²({su.bartlett_df}) = {su.bartlett_chi2.toFixed(3)}，p {su.bartlett_p < 0.001 ? "< 0.001" : `= ${su.bartlett_p.toFixed(4)}`}
+                {su.bartlett_sig ? "，显著（拒绝相关系数矩阵为单位矩阵的原假设，适合做主成分分析）" : "，不显著（变量间相关性可能不足，不太适合做主成分分析）"}</>
+            : "—（相关系数矩阵奇异，无法计算）"}
+        </div>
+      )}
       <div className="tbl-scroll">
         <table className="acad-table reg-tbl">
           <thead><tr>
@@ -802,6 +814,49 @@ function PCATable({ data }) {
           </tbody>
         </table>
       </div>
+      {cs && (
+        <>
+          <div className="tbl-title" style={{ marginTop: 16 }}>综合得分（按方差贡献率加权）</div>
+          <div className="hausman-box" style={{ marginBottom: 12 }}>
+            {cs.formula}
+            <br />均值 = {cs.mean.toFixed(4)}　标准差 = {cs.std.toFixed(4)}　最小值 = {cs.min.toFixed(4)}　最大值 = {cs.max.toFixed(4)}
+          </div>
+          <div className="tbl-scroll">
+            <table className="acad-table reg-tbl">
+              <thead><tr>
+                <th className="col-var">权重</th>
+                {cs.weights.map(w => <th key={w.component} className="col-reg">{w.component}</th>)}
+              </tr></thead>
+              <tbody>
+                <tr>
+                  <td className="col-var">方差贡献率占比</td>
+                  {cs.weights.map(w => <td key={w.component} className="col-reg">{w.weight.toFixed(4)}</td>)}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="tbl-scroll" style={{ marginTop: 8 }}>
+            <table className="acad-table reg-tbl">
+              <thead><tr>
+                <th className="col-var">综合得分最高的样本（行号）</th>
+                <th className="col-reg">得分</th>
+                <th className="col-var">综合得分最低的样本（行号）</th>
+                <th className="col-reg">得分</th>
+              </tr></thead>
+              <tbody>
+                {cs.top.map((t, i) => (
+                  <tr key={i}>
+                    <td className="col-var">#{t.row}</td>
+                    <td className="col-reg">{t.score.toFixed(4)}</td>
+                    <td className="col-var">#{cs.bottom[i]?.row}</td>
+                    <td className="col-reg">{cs.bottom[i] != null ? cs.bottom[i].score.toFixed(4) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
       <div className="tbl-note">{data.notes}</div>
     </div>
   );

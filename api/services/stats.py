@@ -872,6 +872,50 @@ def run_pca(
         X = sub[variables] - sub[variables].mean()
         matrix_label = "协方差矩阵"
 
+    # 适用性检验：KMO 抽样适当性度量 + Bartlett 球形检验（基于相关系数矩阵，对应 Stata estat kmo / 相应球形检验）
+    corr_matrix = np.corrcoef(sub[variables].values, rowvar=False)
+    n_obs, p_vars = len(sub), len(variables)
+
+    det_r = np.linalg.det(corr_matrix)
+    if det_r > 0:
+        bartlett_chi2 = float(-((n_obs - 1) - (2 * p_vars + 5) / 6) * np.log(det_r))
+        bartlett_df = p_vars * (p_vars - 1) / 2
+        bartlett_p = float(1 - stats.chi2.cdf(bartlett_chi2, bartlett_df))
+    else:
+        bartlett_chi2 = bartlett_df = bartlett_p = None
+
+    try:
+        inv_r = np.linalg.inv(corr_matrix)
+        d = np.sqrt(np.diag(inv_r))
+        partial_corr = -inv_r / np.outer(d, d)
+        np.fill_diagonal(partial_corr, 0)
+        r_sq = corr_matrix ** 2
+        np.fill_diagonal(r_sq, 0)
+        sum_r2 = float(np.sum(r_sq))
+        sum_partial2 = float(np.sum(partial_corr ** 2))
+        kmo = sum_r2 / (sum_r2 + sum_partial2) if (sum_r2 + sum_partial2) > 0 else None
+    except np.linalg.LinAlgError:
+        kmo = None
+
+    def _kmo_label(v):
+        if v is None:
+            return "无法计算（相关系数矩阵不可逆，可能存在严重共线性）"
+        if v >= 0.9: return "极好，非常适合做主成分分析"
+        if v >= 0.8: return "良好，适合做主成分分析"
+        if v >= 0.7: return "中等，可以做主成分分析"
+        if v >= 0.6: return "普通，勉强可以做主成分分析"
+        if v >= 0.5: return "较差，不太适合做主成分分析"
+        return "不可接受，不建议做主成分分析"
+
+    suitability = {
+        "kmo": round(kmo, 4) if kmo is not None else None,
+        "kmo_label": _kmo_label(kmo),
+        "bartlett_chi2": round(bartlett_chi2, 4) if bartlett_chi2 is not None else None,
+        "bartlett_df": int(bartlett_df) if bartlett_df is not None else None,
+        "bartlett_p": round(bartlett_p, 6) if bartlett_p is not None else None,
+        "bartlett_sig": bool(bartlett_p is not None and bartlett_p < 0.05),
+    }
+
     cov_matrix = np.cov(X.values, rowvar=False, ddof=1)
     eigvals, eigvecs = np.linalg.eigh(cov_matrix)
 
@@ -909,19 +953,48 @@ def run_pca(
             row[f"Comp{j + 1}"] = round(float(eigvecs[i, j]), 6)
         loadings.append(row)
 
+    # 综合得分：以已保留主成分的方差贡献率占比为权重，对各主成分得分加权求和（论文中常用于构造综合指数）
+    weights = explained_ratio[:k] / float(np.sum(explained_ratio[:k]))
+    scores_matrix = X.values @ eigvecs[:, :k]
+    composite = scores_matrix @ weights
+    composite_series = pd.Series(composite, index=sub.index)
+
+    ranking = composite_series.sort_values(ascending=False)
+    top_n = min(5, len(ranking))
+    composite_score = {
+        "weights": [
+            {"component": f"Comp{j + 1}", "weight": round(float(w), 6)}
+            for j, w in enumerate(weights)
+        ],
+        "mean":  round(float(composite_series.mean()), 6),
+        "std":   round(float(composite_series.std(ddof=1)), 6),
+        "min":   round(float(composite_series.min()), 6),
+        "max":   round(float(composite_series.max()), 6),
+        "top":    [{"row": int(idx), "score": round(float(val), 4)} for idx, val in ranking.head(top_n).items()],
+        "bottom": [{"row": int(idx), "score": round(float(val), 4)} for idx, val in ranking.tail(top_n).items()][::-1],
+        "formula": (
+            "F = " + " + ".join(f"{w:.4f}×F{j + 1}" for j, w in enumerate(weights))
+            + "（Fj 为第 j 个主成分得分 = 标准化数据 × 对应特征向量；权重为各保留主成分的方差贡献率占已保留主成分总方差贡献率的比例）"
+        ),
+    }
+
     return {
         "type":         "pca",
         "variables":    variables,
         "n":            int(len(sub)),
         "standardize":  standardize,
         "matrix_label": matrix_label,
+        "suitability":  suitability,
         "components":   components,
         "loadings":     loadings,
         "n_retained":   k,
+        "composite_score": composite_score,
         "stata_equivalent": f"pca {' '.join(variables)}{'' if standardize else ', covariance'}",
         "notes": (
             f"基于{matrix_label}的特征值分解；默认按 Kaiser 准则（特征值 > 1）自动保留 {k} 个主成分，"
             "各主成分载荷已统一符号（绝对值最大载荷为正）便于解读；"
-            "若需手动调整保留数量，累计方差贡献率达到 80% 左右是另一种常见的参考经验标准，可结合碎石图自行判断"
+            "若需手动调整保留数量，累计方差贡献率达到 80% 左右是另一种常见的参考经验标准，可结合碎石图自行判断；"
+            "KMO 与 Bartlett 球形检验用于判断变量是否适合做主成分分析（KMO 越接近 1、Bartlett 检验显著 p<0.05 越适合）；"
+            "综合得分按各保留主成分的方差贡献率加权汇总，可作为构造综合指数变量导出后续使用"
         ),
     }
