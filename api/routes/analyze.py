@@ -17,7 +17,7 @@ from services.stats import (
     run_pca,
 )
 from services.interpreter import interpret_results
-from services.session_store import load_cleaned
+from services.session_store import load_cleaned, save_cleaned
 
 router = APIRouter()
 
@@ -194,6 +194,8 @@ async def run_analysis(req: AnalysisRequest):
     else:
         raise HTTPException(status_code=400, detail="数据不能为空，请提供 cleaned_session_id 或 data")
 
+    df_full = df  # 保留完整清洗数据的引用，供 PCA 综合得分写回新变量时使用
+
     if req.variables:
         missing_cols = [v for v in req.variables if v not in df.columns]
         if missing_cols:
@@ -347,12 +349,28 @@ async def run_analysis(req: AnalysisRequest):
             elif analysis_type == "pca":
                 if not req.variables or len(req.variables) < 2:
                     raise ValueError("主成分分析需要至少选择 2 个变量")
-                results["pca"] = run_pca(
+                pca_result = run_pca(
                     df,
                     variables=req.variables,
                     n_components=req.n_components,
                     standardize=req.standardize if req.standardize is not None else True,
                 )
+                # 将综合得分按行写回完整清洗数据，生成新变量并存为新的 cleaned_session_id，
+                # 使其可在后续回归分析中作为变量直接选用（而不仅仅是展示结果）
+                cs = pca_result.get("composite_score")
+                if cs and cs.get("values") and req.cleaned_session_id:
+                    score_col = "pca_score"
+                    suffix = 2
+                    while score_col in df_full.columns:
+                        score_col = f"pca_score_{suffix}"
+                        suffix += 1
+                    score_map = {item["row"]: item["score"] for item in cs["values"]}
+                    df_full = df_full.copy()
+                    df_full[score_col] = df_full.index.to_series().map(score_map)
+                    new_sid = save_cleaned(df_full)
+                    pca_result["score_column"] = score_col
+                    pca_result["new_cleaned_session_id"] = new_sid
+                results["pca"] = pca_result
 
             elif analysis_type in ("panel_fe", "panel_re"):
                 if not req.dep_var or not req.entity_var or not req.time_var:

@@ -876,17 +876,19 @@ def run_pca(
     corr_matrix = np.corrcoef(sub[variables].values, rowvar=False)
     n_obs, p_vars = len(sub), len(variables)
 
-    det_r = np.linalg.det(corr_matrix)
-    if det_r > 0:
-        bartlett_chi2 = float(-((n_obs - 1) - (2 * p_vars + 5) / 6) * np.log(det_r))
+    # 用 slogdet 而非 det：相关系数矩阵维度较大时行列式数值极小，直接求 det 容易下溢为 0 导致检验失败
+    sign_r, logdet_r = np.linalg.slogdet(corr_matrix)
+    if sign_r > 0:
+        bartlett_chi2 = float(-((n_obs - 1) - (2 * p_vars + 5) / 6) * logdet_r)
         bartlett_df = p_vars * (p_vars - 1) / 2
         bartlett_p = float(1 - stats.chi2.cdf(bartlett_chi2, bartlett_df))
     else:
         bartlett_chi2 = bartlett_df = bartlett_p = None
 
-    try:
-        inv_r = np.linalg.inv(corr_matrix)
-        d = np.sqrt(np.diag(inv_r))
+    # 用伪逆而非逆矩阵：变量间高度相关（PCA 的典型场景）时相关系数矩阵接近奇异，直接求逆会报错或数值不稳定
+    inv_r = np.linalg.pinv(corr_matrix)
+    d = np.sqrt(np.diag(inv_r))
+    if np.all(d > 0):
         partial_corr = -inv_r / np.outer(d, d)
         np.fill_diagonal(partial_corr, 0)
         r_sq = corr_matrix ** 2
@@ -894,12 +896,12 @@ def run_pca(
         sum_r2 = float(np.sum(r_sq))
         sum_partial2 = float(np.sum(partial_corr ** 2))
         kmo = sum_r2 / (sum_r2 + sum_partial2) if (sum_r2 + sum_partial2) > 0 else None
-    except np.linalg.LinAlgError:
+    else:
         kmo = None
 
     def _kmo_label(v):
         if v is None:
-            return "无法计算（相关系数矩阵不可逆，可能存在严重共线性）"
+            return "无法计算（相关系数矩阵退化，可能存在变量完全共线或样本量过小）"
         if v >= 0.9: return "极好，非常适合做主成分分析"
         if v >= 0.8: return "良好，适合做主成分分析"
         if v >= 0.7: return "中等，可以做主成分分析"
@@ -972,6 +974,7 @@ def run_pca(
         "max":   round(float(composite_series.max()), 6),
         "top":    [{"row": int(idx), "score": round(float(val), 4)} for idx, val in ranking.head(top_n).items()],
         "bottom": [{"row": int(idx), "score": round(float(val), 4)} for idx, val in ranking.tail(top_n).items()][::-1],
+        "values": [{"row": int(idx), "score": round(float(val), 6)} for idx, val in composite_series.items()],
         "formula": (
             "F = " + " + ".join(f"{w:.4f}×F{j + 1}" for j, w in enumerate(weights))
             + "（Fj 为第 j 个主成分得分 = 标准化数据 × 对应特征向量；权重为各保留主成分的方差贡献率占已保留主成分总方差贡献率的比例）"

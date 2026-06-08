@@ -129,6 +129,80 @@ function exportXlsx(analyzeResults, cleanedData) {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cmpRows), "回归对比");
     }
 
+    if (r.pca?.components?.length) {
+      const p = r.pca;
+      const su = p.suitability;
+      const cs = p.composite_score;
+      const rows = [];
+      rows.push(["主成分分析结果", `${p.matrix_label}，N=${p.n}`]);
+      rows.push([]);
+      if (su) {
+        rows.push(["适用性检验"]);
+        rows.push(["KMO 抽样适当性度量", su.kmo ?? "—", su.kmo_label]);
+        rows.push([
+          "Bartlett 球形检验",
+          su.bartlett_chi2 != null ? `χ²(${su.bartlett_df})=${su.bartlett_chi2}` : "—",
+          su.bartlett_p != null ? `p=${su.bartlett_p}` : "",
+          su.bartlett_sig ? "显著，适合做主成分分析" : "不显著，可能不适合做主成分分析",
+        ]);
+        rows.push([]);
+      }
+      rows.push(["主成分", "特征值", "方差贡献率", "累计贡献率", "是否保留"]);
+      p.components.forEach(c => rows.push([
+        c.component, c.eigenvalue, `${(c.explained * 100).toFixed(2)}%`, `${(c.cumulative * 100).toFixed(2)}%`, c.retained ? "Yes" : "—",
+      ]));
+      rows.push([]);
+      rows.push([`主成分载荷（已保留 ${p.n_retained} 个主成分）`]);
+      rows.push(["变量", ...Array.from({ length: p.n_retained }, (_, j) => `Comp${j + 1}`)]);
+      p.loadings.forEach(row => rows.push([row.variable, ...Array.from({ length: p.n_retained }, (_, j) => row[`Comp${j + 1}`])]));
+      if (cs) {
+        rows.push([]);
+        rows.push(["综合得分"]);
+        rows.push([cs.formula]);
+        rows.push(["均值", cs.mean, "标准差", cs.std, "最小值", cs.min, "最大值", cs.max]);
+        rows.push(["权重", ...cs.weights.map(w => `${w.component}=${w.weight}`)]);
+        rows.push([]);
+        rows.push(["综合得分最高的样本（行号/得分）", ...cs.top.map(t => `#${t.row}: ${t.score}`)]);
+        rows.push(["综合得分最低的样本（行号/得分）", ...cs.bottom.map(t => `#${t.row}: ${t.score}`)]);
+      }
+      rows.push([]);
+      rows.push([p.notes || ""]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "主成分分析");
+    }
+
+    if (r.iv?.coefficients?.length) {
+      const iv = r.iv;
+      const cons = iv.coefficients.find(c => c.variable === "_cons");
+      const mainVars = iv.coefficients.filter(c => c.variable !== "_cons");
+      const endogSet = new Set(iv.endog_vars || []);
+      const rows = [];
+      rows.push(["工具变量法 2SLS 回归结果", "(1)"]);
+      rows.push(["", iv.dep_var]);
+      rows.push([]);
+      mainVars.forEach(c => {
+        rows.push([`${c.variable}${endogSet.has(c.variable) ? "（内生）" : ""}`, `${(c.coef?.toFixed(3) ?? "—")}${c.sig}`]);
+        rows.push(["", `(${c.t_stat?.toFixed(2) ?? "—"})`]);
+      });
+      if (cons) {
+        rows.push(["_cons", `${(cons.coef?.toFixed(3) ?? "—")}${cons.sig}`]);
+        rows.push(["", `(${cons.t_stat?.toFixed(2) ?? "—"})`]);
+      }
+      rows.push(["N", iv.n]);
+      rows.push([]);
+      if (iv.first_stage?.length) {
+        rows.push(["第一阶段诊断（弱工具变量检验，经验法则 F<10）"]);
+        iv.first_stage.forEach(f => rows.push([f.endog_var, `F = ${f.f_stat}`, f.weak ? "弱工具变量" : "通过检验"]));
+        rows.push([]);
+      }
+      if (iv.overid_test) {
+        rows.push(["过度识别检验（Sargan）", `统计量=${iv.overid_test.stat}`, `p=${iv.overid_test.p_value}`]);
+        rows.push([iv.overid_test.conclusion]);
+        rows.push([]);
+      }
+      rows.push([iv.notes || "括号内为t值，***p<0.01, **p<0.05, *p<0.1"]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "工具变量2SLS");
+    }
+
     if (r.ols) { const ws = buildRegSheet(r.ols, "OLS 回归结果"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "OLS"); }
     if (r.panel_fe) { const ws = buildRegSheet(r.panel_fe, "固定效应回归（xtreg, fe）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "固定效应"); }
     if (r.panel_re) { const ws = buildRegSheet(r.panel_re, "随机效应回归（xtreg, re）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "随机效应"); }
@@ -820,6 +894,9 @@ function PCATable({ data }) {
           <div className="hausman-box" style={{ marginBottom: 12 }}>
             {cs.formula}
             <br />均值 = {cs.mean.toFixed(4)}　标准差 = {cs.std.toFixed(4)}　最小值 = {cs.min.toFixed(4)}　最大值 = {cs.max.toFixed(4)}
+            {data.score_column && (
+              <><br /><strong>已自动生成新变量「{data.score_column}」</strong>并写入清洗数据，可直接在后续回归等分析中作为变量选用（无需重新清洗）</>
+            )}
           </div>
           <div className="tbl-scroll">
             <table className="acad-table reg-tbl">
@@ -1132,6 +1209,22 @@ export default function Home() {
       if (!res.ok) throw new Error(json.detail || "分析失败");
       setAnalyzeResults(json);
       setDoAnalyze(json.do_analyze || "");
+
+      // PCA 综合得分已由后端写回完整数据并生成新的 cleaned_session_id：
+      // 同步更新前端缓存的清洗数据/会话，使综合得分可作为新变量在后续回归分析中选用
+      const pcaResult = json.results?.pca;
+      if (pcaResult?.new_cleaned_session_id && pcaResult?.score_column) {
+        const col = pcaResult.score_column;
+        const scoreMap = {};
+        (pcaResult.composite_score?.values || []).forEach(v => { scoreMap[v.row] = v.score; });
+        setCleanedSessionId(pcaResult.new_cleaned_session_id);
+        setCleanedData(prev => prev ? {
+          ...prev,
+          data: prev.data.map((rec, i) => ({ ...rec, [col]: scoreMap[i] ?? null })),
+          columns: prev.columns.includes(col) ? prev.columns : [...prev.columns, col],
+          dtypes: { ...prev.dtypes, [col]: "float64" },
+        } : prev);
+      }
     } catch (e) { alert("分析失败：" + e.message); }
     setLayer2Loading(false);
   }
