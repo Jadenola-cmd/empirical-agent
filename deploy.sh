@@ -65,6 +65,10 @@ fi
 echo ""
 echo "▶ [3/4] 构建前端..."
 if $FRONTEND_CHANGED; then
+    if has_change "^package\.json"; then
+        echo "   package.json 有更新，安装新依赖..."
+        npm install
+    fi
     echo "   检测到前端变更，开始构建..."
     NEXT_PUBLIC_API_URL="http://$PUBLIC_IP" npm run build
 else
