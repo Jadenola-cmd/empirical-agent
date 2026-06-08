@@ -848,6 +848,8 @@ export default function Home() {
   const [dropCols, setDropCols] = useState([]);
   const [strCols, setStrCols] = useState([]);
   const [logVars, setLogVars] = useState([]);
+  const [dedupVars, setDedupVars] = useState([]);
+  const [dedupKeep, setDedupKeep] = useState("first");
   const [winsorizeVars, setWinsorizeVars] = useState([]);
   const [winsorizeLower, setWinsorizeLower] = useState(1);
   const [winsorizeUpper, setWinsorizeUpper] = useState(99);
@@ -1011,6 +1013,8 @@ export default function Home() {
       outlier_threshold: outlierThreshold,
       drop_cols: dropCols,
       str_cols: strCols,
+      dedup_vars: dedupVars,
+      dedup_keep: dedupKeep,
       log_vars: logVars,
       winsorize_vars: winsorizeVars,
       winsorize_lower: winsorizeLower,
@@ -1105,8 +1109,8 @@ export default function Home() {
       <div className="app">
         <div className="jheader">
           <span className="jname">Empirical Research Platform</span>
-          <a href="/docs" className="jnav-link">使用文档</a>
           <span className="jmeta">数据清洗 · 统计分析 · 论文规范输出</span>
+          <a href="/docs" className="jnav-link">📖 查看使用文档</a>
         </div>
         <div className="title-block">
           <h1>论文实证分析<span>平台</span></h1>
@@ -1265,6 +1269,19 @@ export default function Home() {
                 <div className="config-item">
                   <label className="cfg-label">强制文本型列 <span className="cfg-hint">防止股票代码被识别为数字</span></label>
                   <TagSelector options={uniqueCols} selected={strCols} onChange={setStrCols} />
+                </div>
+              )}
+              {uniqueCols.length > 0 && (
+                <div className="config-item">
+                  <label className="cfg-label">删除重复值 <span className="cfg-hint">按选中变量判定重复，常用于清理 1:N / N:N 合并产生的重复行</span></label>
+                  <TagSelector options={uniqueCols} selected={dedupVars} onChange={setDedupVars} />
+                  {dedupVars.length > 0 && (
+                    <div className="radio-group">
+                      {[["first", "保留首次出现"], ["last", "保留末次出现"], ["none", "重复组全部删除"]].map(([v, l]) => (
+                        <label key={v} className={`radio-btn ${dedupKeep === v ? "sel" : ""}`} onClick={() => setDedupKeep(v)}>{l}</label>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               {uniqueCols.length > 0 && (
@@ -1634,11 +1651,11 @@ export default function Home() {
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { background: #f7f5f0; color: #1a1a1a; font-family: 'IBM Plex Sans', sans-serif; min-height: 100vh; }
         .app { max-width: 1000px; margin: 0 auto; padding: 48px 24px; }
-        .jheader { border-top: 3px solid #1a1a1a; border-bottom: 1px solid #1a1a1a; padding: 14px 0 10px; margin-bottom: 36px; display: flex; justify-content: space-between; align-items: baseline; }
+        .jheader { border-top: 3px solid #1a1a1a; border-bottom: 1px solid #1a1a1a; padding: 14px 0 10px; margin-bottom: 36px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
         .jname { font-family: 'Playfair Display', serif; font-size: 13px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; }
         .jmeta { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a8078; }
-        .jnav-link { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #2c4a8a; text-decoration: none; }
-        .jnav-link:hover { text-decoration: underline; }
+        .jnav-link { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; color: #2c4a8a; text-decoration: none; border: 1px solid #2c4a8a; border-radius: 14px; padding: 5px 14px; white-space: nowrap; transition: background 0.15s, color 0.15s; }
+        .jnav-link:hover { background: #2c4a8a; color: white; }
         .title-block { margin-bottom: 36px; padding-bottom: 28px; border-bottom: 1px solid #ddd8cc; }
         .title-block h1 { font-family: 'Playfair Display', serif; font-size: 30px; font-weight: 700; margin-bottom: 8px; }
         .title-block h1 span { color: #2c4a8a; }

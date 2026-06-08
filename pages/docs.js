@@ -24,6 +24,26 @@ export default function Docs({ content }) {
         <article className="docs-body">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         </article>
+
+        <div className="docs-contact">
+          <div className="contact-qr-box">
+            <img
+              src="/contact-qr.png"
+              alt="联系方式二维码"
+              className="contact-qr-img"
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+                e.currentTarget.nextSibling.style.display = "flex";
+              }}
+            />
+            <div className="contact-qr-placeholder">二维码占位</div>
+          </div>
+          <div className="contact-text">
+            <h3>扫码联系作者</h3>
+            <p>使用中遇到问题或有功能建议，欢迎扫码反馈交流。</p>
+            <p className="contact-hint">将真实二维码图片命名为 <code>contact-qr.png</code> 放入项目 <code>public/</code> 目录，即可替换此处的占位图。</p>
+          </div>
+        </div>
       </div>
 
       <style jsx global>{`
@@ -48,6 +68,15 @@ export default function Docs({ content }) {
         .docs-body th { background: #ece8df; font-weight: 600; }
         .docs-body a { color: #2c4a8a; }
         .docs-body hr { border: none; border-top: 1px solid #ddd8cc; margin: 32px 0; }
+
+        .docs-contact { margin-top: 48px; padding-top: 28px; border-top: 1px solid #ddd8cc; display: flex; align-items: center; gap: 24px; }
+        .contact-qr-box { width: 120px; height: 120px; flex-shrink: 0; border: 1px dashed #c8c1b4; border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .contact-qr-img { width: 100%; height: 100%; object-fit: contain; }
+        .contact-qr-placeholder { display: none; width: 100%; height: 100%; align-items: center; justify-content: center; color: #b8b0a2; font-size: 12px; font-family: 'IBM Plex Mono', monospace; text-align: center; }
+        .contact-text h3 { font-size: 16px; margin: 0 0 8px; color: #2c4a8a; }
+        .contact-text p { margin: 4px 0; font-size: 13px; line-height: 1.7; color: #4a443c; }
+        .contact-text .contact-hint { font-size: 12px; color: #8a8078; }
+        .contact-text code { font-family: 'IBM Plex Mono', monospace; background: #ece8df; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
       `}</style>
     </div>
   );

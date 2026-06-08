@@ -920,8 +920,8 @@ def run_pca(
         "n_retained":   k,
         "stata_equivalent": f"pca {' '.join(variables)}{'' if standardize else ', covariance'}",
         "notes": (
-            f"基于{matrix_label}的特征值分解；默认按 Kaiser 准则（特征值 > 1）保留 {k} 个主成分，"
+            f"基于{matrix_label}的特征值分解；默认按 Kaiser 准则（特征值 > 1）自动保留 {k} 个主成分，"
             "各主成分载荷已统一符号（绝对值最大载荷为正）便于解读；"
-            "累计方差贡献率达 80% 左右通常被认为信息保留充分，可据此调整保留主成分数"
+            "若需手动调整保留数量，累计方差贡献率达到 80% 左右是另一种常见的参考经验标准，可结合碎石图自行判断"
         ),
     }

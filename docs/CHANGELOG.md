@@ -13,6 +13,14 @@
   - 主成分分析 PCA（`run_pca`）：基于 `numpy` 对相关系数矩阵（默认）或协方差矩阵做特征值分解，输出各主成分特征值/方差贡献率/累计贡献率及载荷矩阵，按 Kaiser 准则（特征值>1）自动判定保留主成分数，归类为"数据探索"
 - `_gen_analyze_do()` 同步追加三类分析对应的 Stata 代码片段生成（`ivregress 2sls` + `estat firststage`/`estat overid`；`pca`）
 - 前端新增 `IVTable`（含第一阶段 F 检验与过度识别检验展示）、`PCATable`（方差贡献率表 + 载荷表）结果展示组件，及内生变量/工具变量、PCA 标准化方式选择器
+- 数据清洗新增"删除重复值"步骤（`dedup_vars`/`dedup_keep`，支持保留首次/末次/全部删除三种策略），常用于处理 1:N / N:N 合并产生的重复行；同步生成对应 Stata `duplicates drop` / `bysort ... keep if _n==1` 代码片段
+
+**修复**
+- PCA 结果备注文案修正：原文案同时出现"按 Kaiser 准则保留"与"累计贡献率超过 80% 的成分被保留"两种相互矛盾的判定依据描述，现明确 Kaiser 准则（特征值>1）为实际采用的默认标准，累计方差贡献率 80% 仅作为用户手动调整保留数量时的参考经验值
+
+**前端体验**
+- 头部"使用文档"入口由纯文字链接改为带图标的胶囊按钮样式（📖 查看使用文档），提升可见度
+- `/docs` 页面底部新增"扫码联系作者"占位区块：预留 `public/contact-qr.png` 图片位置，图片缺失时自动显示占位框，放入真实二维码图片即可生效
 
 **部署修复**
 - `deploy.sh` 补充 `package.json` 变更时自动 `npm install`：此前脚本仅在 `requirements.txt` 变化时安装 Python 依赖，前端新依赖（如 `react-markdown`/`remark-gfm`）始终未被安装，导致服务器构建报 `Module not found`

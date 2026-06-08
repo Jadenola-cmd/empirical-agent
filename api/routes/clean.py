@@ -182,6 +182,17 @@ def _gen_clean_do(merge_cfg: dict, clean_cfg: dict, dfs: dict) -> str:
     if drop_cols:
         lines.append(f"drop {' '.join(drop_cols)}")
 
+    # 删除重复值
+    dedup_vars = clean_cfg.get("dedup_vars", [])
+    if dedup_vars:
+        dedup_keep = clean_cfg.get("dedup_keep", "first")
+        if dedup_keep == "none":
+            lines.append(f"duplicates drop {' '.join(dedup_vars)}, force")
+            lines.append(f"* 注：上面会删除整组重复（与所选变量取值完全相同的行全部删除）；")
+            lines.append(f"* 若只想保留每组中的第一条，改用：bysort {' '.join(dedup_vars)}: keep if _n == 1")
+        else:
+            lines.append(f"bysort {' '.join(dedup_vars)}: keep if _n == {'_N' if dedup_keep == 'last' else '1'}")
+
     # 缺失值
     missing = clean_cfg.get("missing", "drop")
     if missing == "drop":
