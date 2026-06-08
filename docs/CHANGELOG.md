@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-06-08
+
+**新功能**
+- 实证分析新增三种类型，均接入 `/api/analyze/run`：
+  - Sobel (1982) 检验：作为 Baron-Kenny 三步法的补充验证，基于已估计的路径 a、b 系数与标准误计算间接效应 a×b 的 z 统计量与 p 值，并入 `run_mediation` 返回结果（`sobel` 字段），前端中介效应结果区同步展示判定结论
+  - 工具变量法 2SLS（`run_iv`）：基于 `linearmodels.iv.IV2SLS` 估计，自动报告第一阶段 F 统计量（弱工具变量诊断，经验法则 F<10）及过度识别检验（Sargan，仅工具变量数 > 内生变量数时报告），归类为"因果识别"
+  - 主成分分析 PCA（`run_pca`）：基于 `numpy` 对相关系数矩阵（默认）或协方差矩阵做特征值分解，输出各主成分特征值/方差贡献率/累计贡献率及载荷矩阵，按 Kaiser 准则（特征值>1）自动判定保留主成分数，归类为"数据探索"
+- `_gen_analyze_do()` 同步追加三类分析对应的 Stata 代码片段生成（`ivregress 2sls` + `estat firststage`/`estat overid`；`pca`）
+- 前端新增 `IVTable`（含第一阶段 F 检验与过度识别检验展示）、`PCATable`（方差贡献率表 + 载荷表）结果展示组件，及内生变量/工具变量、PCA 标准化方式选择器
+
+**部署修复**
+- `deploy.sh` 补充 `package.json` 变更时自动 `npm install`：此前脚本仅在 `requirements.txt` 变化时安装 Python 依赖，前端新依赖（如 `react-markdown`/`remark-gfm`）始终未被安装，导致服务器构建报 `Module not found`
+
+---
+
 ## 2026-06-07（晚间·二）
 
 **优化**

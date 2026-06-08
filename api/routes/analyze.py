@@ -13,6 +13,8 @@ from services.stats import (
     run_mediation,
     run_did,
     run_heterogeneity,
+    run_iv,
+    run_pca,
 )
 from services.interpreter import interpret_results
 from services.session_store import load_cleaned
@@ -50,6 +52,10 @@ class AnalysisRequest(BaseModel):
     mediator_var: Optional[str] = None
     group_var: Optional[str] = None
     group_method: Optional[str] = "median"
+    endog_vars: Optional[List[str]] = None
+    instrument_vars: Optional[List[str]] = None
+    n_components: Optional[int] = None
+    standardize: Optional[bool] = True
     interpret: Optional[bool] = False
     custom_question: Optional[str] = None
 
@@ -143,6 +149,20 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
             lines.append(f"reg {req.dep_var} {' '.join(all_x)} if _grp_high == 0{se_opt}  // 低于中位数组")
             lines.append(f"reg {req.dep_var} {' '.join(all_x)} if _grp_high == 1{se_opt}  // 高于中位数组")
 
+    if "iv" in req.analysis_types and req.dep_var and req.endog_vars and req.instrument_vars:
+        se_opt = f", vce(cluster {req.cluster_var})" if req.cluster_var else (", vce(robust)" if req.robust_se else "")
+        lines.append(
+            f"ivregress 2sls {req.dep_var} {' '.join(req.control_vars or [])} "
+            f"({' '.join(req.endog_vars)} = {' '.join(req.instrument_vars)}){se_opt}"
+        )
+        lines.append("estat firststage  // 第一阶段 F 统计量，弱工具变量检验")
+        if len(req.instrument_vars) > len(req.endog_vars):
+            lines.append("estat overid  // 过度识别检验（Sargan/Hansen J）")
+
+    if "pca" in req.analysis_types and req.variables:
+        cov_opt = "" if (req.standardize is None or req.standardize) else ", covariance"
+        lines.append(f"pca {' '.join(req.variables)}{cov_opt}")
+
     if "panel_re" in req.analysis_types and req.dep_var:
         all_x = (req.indep_vars or []) + (req.control_vars or [])
         lines.append(f"xtset {req.entity_var} {req.time_var}")
@@ -188,6 +208,10 @@ async def run_analysis(req: AnalysisRequest):
             keep.append(req.mediator_var)
         if "heterogeneity" in req.analysis_types and req.group_var and req.group_var not in keep:
             keep.append(req.group_var)
+        if "iv" in req.analysis_types:
+            for v in (req.endog_vars or []) + (req.instrument_vars or []):
+                if v not in keep:
+                    keep.append(v)
         df = df[keep]
 
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
@@ -294,6 +318,35 @@ async def run_analysis(req: AnalysisRequest):
                     control_vars=req.control_vars or [],
                     robust_se=req.robust_se,
                     cluster_var=req.cluster_var,
+                )
+
+            elif analysis_type == "iv":
+                if not req.dep_var:
+                    raise ValueError("工具变量法需要指定被解释变量 dep_var")
+                if not req.endog_vars:
+                    raise ValueError("工具变量法需要指定内生解释变量 endog_vars")
+                if not req.instrument_vars:
+                    raise ValueError("工具变量法需要指定工具变量 instrument_vars")
+                if len(req.instrument_vars) < len(req.endog_vars):
+                    raise ValueError("工具变量数不能少于内生变量数（识别条件不满足）")
+                results["iv"] = run_iv(
+                    df,
+                    dep_var=req.dep_var,
+                    endog_vars=req.endog_vars,
+                    instrument_vars=req.instrument_vars,
+                    control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
+                )
+
+            elif analysis_type == "pca":
+                if not req.variables or len(req.variables) < 2:
+                    raise ValueError("主成分分析需要至少选择 2 个变量")
+                results["pca"] = run_pca(
+                    df,
+                    variables=req.variables,
+                    n_components=req.n_components,
+                    standardize=req.standardize if req.standardize is not None else True,
                 )
 
             elif analysis_type in ("panel_fe", "panel_re"):

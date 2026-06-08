@@ -289,6 +289,25 @@ def run_mediation(
     a_sig = a_path is not None and a_path["p_value"] < SIG_P
     c_prime_sig = c_prime is not None and c_prime["p_value"] < SIG_P
 
+    # Sobel (1982) 检验：以路径 a、b 的系数与标准误检验间接效应 a*b 是否显著，
+    # 作为 Baron-Kenny 三步法的补充验证（z 统计量服从渐近正态分布）
+    sobel = None
+    if a_path is not None and b_path is not None:
+        se_a, se_b = a_path["std_error"], b_path["std_error"]
+        a_coef, b_coef = a_path["coef"], b_path["coef"]
+        se_sobel = (b_coef ** 2 * se_a ** 2 + a_coef ** 2 * se_b ** 2) ** 0.5
+        if se_sobel > 0:
+            z = a_coef * b_coef / se_sobel
+            p = float(2 * (1 - stats.norm.cdf(abs(z))))
+            sobel = {
+                "indirect_effect": round(a_coef * b_coef, 6),
+                "se": round(se_sobel, 6),
+                "z_stat": round(z, 4),
+                "p_value": round(p, 6),
+                "sig": sig_stars(p),
+                "significant": p < SIG_P,
+            }
+
     if not a_sig:
         mediation_type = "无中介效应"
         conclusion = (
@@ -330,9 +349,11 @@ def run_mediation(
         "paths": {"c_total": c_total, "a": a_path, "b": b_path, "c_prime": c_prime},
         "mediation_type": mediation_type,
         "conclusion": conclusion,
+        "sobel": sobel,
         "notes": (
             "Baron & Kenny (1986) 三步法：① Y~X（c）② M~X（a）③ Y~X+M（b、c'）；"
-            "显著性按 p<0.1 判定。该方法对样本量和效应量较敏感，建议结合 Bootstrap 法或 Sobel 检验进一步验证"
+            "显著性按 p<0.1 判定。已附 Sobel (1982) 检验作为间接效应 a*b 的补充验证，"
+            "该方法对样本量和效应量较敏感，建议结合 Bootstrap 法进一步交叉验证"
         ),
     }
 
@@ -698,5 +719,209 @@ def run_heterogeneity(
         "notes": (
             f"按 {group_var}（{method_note}）拆分样本分别估计{'固定效应（xtreg, fe）' if use_panel else 'OLS'}模型，"
             "对照各组核心解释变量系数的方向、大小及显著性差异，是检验异质性的标准做法；分组阈值基于全样本计算，保证各组可比"
+        ),
+    }
+
+
+def run_iv(
+    df: pd.DataFrame,
+    dep_var: str,
+    endog_vars: List[str],
+    instrument_vars: List[str],
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    """工具变量法 2SLS 估计，对应 Stata: ivregress 2sls y controls (endog = instruments)。
+    第一阶段 F 统计量（< 10 视为弱工具变量）与过度识别检验（仅工具变量数 > 内生变量数时报告 Sargan 检验）
+    是 IV 估计结果展示的标配诊断项。
+    """
+    from linearmodels.iv import IV2SLS
+
+    cols_needed = list(dict.fromkeys(
+        [dep_var] + endog_vars + instrument_vars + control_vars + ([cluster_var] if cluster_var else [])
+    ))
+    sub = df[cols_needed].copy()
+
+    for col in [dep_var] + endog_vars + instrument_vars + control_vars:
+        if not pd.api.types.is_object_dtype(sub[col]):
+            sub[col] = pd.to_numeric(sub[col], errors="coerce")
+
+    sub, control_vars_final, dummy_info = _expand_categoricals(sub, control_vars)
+
+    check_cols = [dep_var] + endog_vars + instrument_vars + control_vars_final
+    total_rows = len(sub)
+    sub = sub.dropna(subset=check_cols)
+    if len(sub) == 0:
+        raise ValueError(f"有效数据为空（共 {total_rows} 行），请检查变量选择和缺失值情况")
+
+    y = sub[dep_var]
+    endog = sub[endog_vars]
+    instruments = sub[instrument_vars]
+    exog = sm.add_constant(sub[control_vars_final], has_constant="add") if control_vars_final \
+        else pd.DataFrame({"const": np.ones(len(sub))}, index=sub.index)
+
+    model = IV2SLS(y, exog, endog, instruments)
+
+    if cluster_var:
+        res = model.fit(cov_type="clustered", clusters=sub[cluster_var])
+        se_type = f"clustered({cluster_var})"
+    elif robust_se:
+        res = model.fit(cov_type="robust")
+        se_type = "robust"
+    else:
+        res = model.fit(cov_type="unadjusted")
+        se_type = "conventional"
+
+    coefs = []
+    for name in res.params.index:
+        p = float(res.pvalues[name])
+        coefs.append({
+            "variable":  name if name != "const" else "_cons",
+            "coef":      round(float(res.params[name]), 6),
+            "std_error": round(float(res.std_errors[name]), 6),
+            "t_stat":    round(float(res.tstats[name]), 4),
+            "p_value":   round(p, 6),
+            "sig":       sig_stars(p),
+        })
+
+    # 第一阶段 F 统计量（弱工具变量检验，经验法则 F < 10 视为弱工具变量）
+    first_stage = []
+    try:
+        diag = res.first_stage.diagnostics
+        for ev in endog_vars:
+            if ev in diag.index:
+                row = diag.loc[ev]
+                f_stat = float(row["f.stat"])
+                first_stage.append({
+                    "variable": ev,
+                    "f_stat":   round(f_stat, 4),
+                    "f_pvalue": round(float(row["f.pval"]), 6),
+                    "weak":     f_stat < 10,
+                })
+    except Exception:
+        first_stage = []
+
+    # 过度识别检验：仅当工具变量数 > 内生变量数（过度识别）时有意义
+    overid = None
+    if len(instrument_vars) > len(endog_vars):
+        try:
+            sargan = res.sargan
+            overid = {
+                "stat":       round(float(sargan.stat), 4),
+                "p_value":    round(float(sargan.pval), 6),
+                "conclusion": (
+                    "p<0.1，拒绝原假设，工具变量外生性存疑，建议重新检视工具变量选择"
+                    if sargan.pval < 0.1 else
+                    "p≥0.1，不拒绝原假设，未发现工具变量外生性问题"
+                ),
+            }
+        except Exception:
+            overid = None
+
+    cat_note = (
+        f"；控制变量 {list(dummy_info.keys())} 已自动展开为虚拟变量（drop_first=True，对齐 Stata xi:）"
+        if dummy_info else ""
+    )
+
+    return {
+        "type":             "iv",
+        "dep_var":          dep_var,
+        "endog_vars":       endog_vars,
+        "instrument_vars":  instrument_vars,
+        "control_vars":     control_vars,
+        "n":                int(res.nobs),
+        "r2":               round(float(res.rsquared), 6),
+        "se_type":          se_type,
+        "coefficients":     coefs,
+        "first_stage":      first_stage,
+        "overid_test":      overid,
+        "stata_equivalent": f"ivregress 2sls {dep_var} {' '.join(control_vars_final)} ({' '.join(endog_vars)} = {' '.join(instrument_vars)})",
+        "notes": (
+            "工具变量法 2SLS（两阶段最小二乘）估计；第一阶段 F 统计量 < 10 提示弱工具变量问题，"
+            "过度识别检验（Sargan）仅在工具变量数大于内生变量数时报告" + cat_note
+        ),
+    }
+
+
+def run_pca(
+    df: pd.DataFrame,
+    variables: List[str],
+    n_components: Optional[int] = None,
+    standardize: bool = True,
+) -> Dict:
+    """主成分分析（PCA），基于相关系数矩阵的特征值分解，对应 Stata: pca varlist。
+    标准化（standardize=True）等价于对相关系数矩阵做特征分解，是变量量纲不一致时的标准做法；
+    不标准化则对协方差矩阵做特征分解，对应 Stata: pca varlist, covariance。
+    """
+    sub = df[variables].copy()
+    for col in variables:
+        sub[col] = pd.to_numeric(sub[col], errors="coerce")
+
+    total_rows = len(sub)
+    sub = sub.dropna(subset=variables)
+    if len(sub) == 0:
+        raise ValueError(f"有效数据为空（共 {total_rows} 行），请检查变量选择和缺失值情况")
+    if len(variables) < 2:
+        raise ValueError("主成分分析至少需要选择 2 个变量")
+
+    if standardize:
+        X = (sub[variables] - sub[variables].mean()) / sub[variables].std(ddof=1)
+        matrix_label = "相关系数矩阵"
+    else:
+        X = sub[variables] - sub[variables].mean()
+        matrix_label = "协方差矩阵"
+
+    cov_matrix = np.cov(X.values, rowvar=False, ddof=1)
+    eigvals, eigvecs = np.linalg.eigh(cov_matrix)
+
+    # eigh 按升序排列，转为降序（特征值从大到小，对齐 Stata pca 输出顺序）
+    order = np.argsort(eigvals)[::-1]
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+
+    # 特征值符号可能因数值计算翻转，统一令每个主成分中绝对值最大的载荷为正，便于解读
+    for j in range(eigvecs.shape[1]):
+        if eigvecs[np.argmax(np.abs(eigvecs[:, j])), j] < 0:
+            eigvecs[:, j] = -eigvecs[:, j]
+
+    total_var = float(np.sum(eigvals))
+    explained_ratio = eigvals / total_var
+    cumulative_ratio = np.cumsum(explained_ratio)
+
+    k = n_components or int(np.sum(eigvals > 1))  # 默认按 Kaiser 准则（特征值>1）保留主成分
+    k = max(1, min(k, len(variables)))
+
+    components = []
+    for j in range(len(variables)):
+        components.append({
+            "component":  f"Comp{j + 1}",
+            "eigenvalue": round(float(eigvals[j]), 6),
+            "explained":  round(float(explained_ratio[j]), 6),
+            "cumulative": round(float(cumulative_ratio[j]), 6),
+            "retained":   j < k,
+        })
+
+    loadings = []
+    for i, var in enumerate(variables):
+        row = {"variable": var}
+        for j in range(len(variables)):
+            row[f"Comp{j + 1}"] = round(float(eigvecs[i, j]), 6)
+        loadings.append(row)
+
+    return {
+        "type":         "pca",
+        "variables":    variables,
+        "n":            int(len(sub)),
+        "standardize":  standardize,
+        "matrix_label": matrix_label,
+        "components":   components,
+        "loadings":     loadings,
+        "n_retained":   k,
+        "stata_equivalent": f"pca {' '.join(variables)}{'' if standardize else ', covariance'}",
+        "notes": (
+            f"基于{matrix_label}的特征值分解；默认按 Kaiser 准则（特征值 > 1）保留 {k} 个主成分，"
+            "各主成分载荷已统一符号（绝对值最大载荷为正）便于解读；"
+            "累计方差贡献率达 80% 左右通常被认为信息保留充分，可据此调整保留主成分数"
         ),
     }

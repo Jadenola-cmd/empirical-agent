@@ -316,9 +316,11 @@ const ANALYSIS_REGISTRY = [
   { type: "panel_fe",      icon: "🏛️", title: "固定效应",    desc: "entity FE · Hausman检验", category: "主回归分析" },
   { type: "panel_re",      icon: "🎲", title: "随机效应",     desc: "GLS估计 · xtreg, re", category: "主回归分析" },
   { type: "did",           icon: "⏱️", title: "双重差分 DID", desc: "面板双向FE · 平行趋势检验", category: "因果识别" },
+  { type: "iv",            icon: "🪛", title: "工具变量法 2SLS", desc: "两阶段最小二乘 · 弱工具变量检验", category: "因果识别" },
   { type: "moderation",    icon: "🔀", title: "调节效应分析", desc: "交互项回归 · 自动中心化", category: "机制检验" },
-  { type: "mediation",     icon: "🧩", title: "中介效应分析", desc: "Baron-Kenny 三步法", category: "机制检验" },
+  { type: "mediation",     icon: "🧩", title: "中介效应分析", desc: "Baron-Kenny 三步法 + Sobel 检验", category: "机制检验" },
   { type: "heterogeneity", icon: "🧬", title: "异质性分析",   desc: "分组回归对比", category: "稳健性检验" },
+  { type: "pca",           icon: "🧮", title: "主成分分析 PCA", desc: "降维 · 载荷与方差贡献率", category: "数据探索" },
 ];
 
 function RegressionTable({ data, label, bracketMode = "t" }) {
@@ -678,6 +680,133 @@ function HeterogeneityTable({ data }) {
   );
 }
 
+// ─── 工具变量法 2SLS：回归结果 + 第一阶段 F 检验 + 过度识别检验 ──
+function IVTable({ data }) {
+  const [bracketMode, setBracketMode] = useState("t");
+  if (!data?.coefficients?.length) return null;
+  const cons = data.coefficients.find(c => c.variable === "_cons");
+  const mainVars = data.coefficients.filter(c => c.variable !== "_cons");
+  const endogSet = new Set(data.endog_vars || []);
+
+  function renderCoefCell(c) {
+    const bracket = bracketMode === "se" ? c.std_error?.toFixed(3) : c.t_stat?.toFixed(2);
+    return (
+      <td className="col-reg">
+        <div>{(c.coef?.toFixed(3) ?? "—")}<sup className="sig">{c.sig}</sup></div>
+        <div className="tval">({bracket ?? "—"})</div>
+      </td>
+    );
+  }
+
+  return (
+    <div className="result-block">
+      <div className="tbl-title-row">
+        <span className="tbl-title">工具变量法 2SLS 回归结果</span>
+        <span className="bracket-toggle">
+          括号内：
+          <button className={`btn-tog ${bracketMode === "t" ? "active" : ""}`} onClick={() => setBracketMode("t")}>t 值</button>
+          <button className={`btn-tog ${bracketMode === "se" ? "active" : ""}`} onClick={() => setBracketMode("se")}>标准误</button>
+        </span>
+      </div>
+      <table className="acad-table reg-tbl">
+        <thead><tr>
+          <th className="col-var"></th>
+          <th className="col-reg">(1)<br /><span className="depvar">{data.dep_var}</span></th>
+        </tr></thead>
+        <tbody>
+          {mainVars.map((c, i) => (
+            <tr key={i} className={endogSet.has(c.variable) ? "dummy-coef-row" : ""}>
+              <td className="col-var">{c.variable}{endogSet.has(c.variable) && <span className="vh"> (内生)</span>}</td>
+              {renderCoefCell(c)}
+            </tr>
+          ))}
+          {cons && (
+            <tr>
+              <td className="col-var">_cons</td>
+              {renderCoefCell(cons)}
+            </tr>
+          )}
+          <tr className="fe-row"><td className="col-var">工具变量</td><td className="col-reg">{(data.instrument_vars || []).join(", ")}</td></tr>
+          <tr className="stat-row"><td className="col-var">N</td><td className="col-reg">{data.n?.toLocaleString()}</td></tr>
+          <tr className="stat-row"><td className="col-var">R²</td><td className="col-reg">{data.r2?.toFixed(3) ?? "—"}</td></tr>
+        </tbody>
+      </table>
+      {data.first_stage?.length > 0 && (
+        <div className={data.first_stage.some(f => f.weak) ? "dropped-warn" : "hausman-box"}>
+          <strong>第一阶段 F 检验（弱工具变量诊断）</strong>
+          {data.first_stage.map(f => (
+            <div key={f.variable}>
+              {f.variable}：F = {f.f_stat}，p = {f.f_pvalue}
+              {f.weak ? "（F<10，存在弱工具变量风险）" : "（F≥10，未发现弱工具变量问题）"}
+            </div>
+          ))}
+        </div>
+      )}
+      {data.overid_test && (
+        <div className={data.overid_test.p_value >= 0.1 ? "hausman-box" : "dropped-warn"}>
+          <strong>过度识别检验（Sargan）</strong>：统计量={data.overid_test.stat}，p={data.overid_test.p_value}
+          <br />{data.overid_test.conclusion}
+        </div>
+      )}
+      <div className="tbl-note">{data.notes}</div>
+    </div>
+  );
+}
+
+// ─── 主成分分析 PCA：方差贡献率表 + 载荷表 ──
+function PCATable({ data }) {
+  if (!data?.components?.length) return null;
+  return (
+    <div className="result-block">
+      <div className="tbl-title">主成分分析结果（{data.matrix_label}，N={data.n?.toLocaleString()}）</div>
+      <div className="tbl-scroll">
+        <table className="acad-table reg-tbl">
+          <thead><tr>
+            <th className="col-var">主成分</th>
+            <th className="col-reg">特征值</th>
+            <th className="col-reg">方差贡献率</th>
+            <th className="col-reg">累计贡献率</th>
+            <th className="col-reg">是否保留</th>
+          </tr></thead>
+          <tbody>
+            {data.components.map(c => (
+              <tr key={c.component} className={c.retained ? "" : "dummy-coef-row"}>
+                <td className="col-var">{c.component}</td>
+                <td className="col-reg">{c.eigenvalue.toFixed(3)}</td>
+                <td className="col-reg">{(c.explained * 100).toFixed(2)}%</td>
+                <td className="col-reg">{(c.cumulative * 100).toFixed(2)}%</td>
+                <td className="col-reg">{c.retained ? "Yes" : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="tbl-title" style={{ marginTop: 16 }}>主成分载荷（仅展示已保留的 {data.n_retained} 个主成分）</div>
+      <div className="tbl-scroll">
+        <table className="acad-table reg-tbl">
+          <thead><tr>
+            <th className="col-var">变量</th>
+            {Array.from({ length: data.n_retained }, (_, j) => (
+              <th key={j} className="col-reg">Comp{j + 1}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {data.loadings.map(row => (
+              <tr key={row.variable}>
+                <td className="col-var">{row.variable}</td>
+                {Array.from({ length: data.n_retained }, (_, j) => (
+                  <td key={j} className="col-reg">{row[`Comp${j + 1}`]?.toFixed(3)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="tbl-note">{data.notes}</div>
+    </div>
+  );
+}
+
 function TagSelector({ options, selected, onChange, single, dtypes }) {
   function dtBadge(col) {
     if (!dtypes) return null;
@@ -750,6 +879,9 @@ export default function Home() {
   const [mediatorVar, setMediatorVar] = useState("");
   const [groupVar, setGroupVar] = useState("");
   const [groupMethod, setGroupMethod] = useState("median");
+  const [endogVars, setEndogVars] = useState([]);
+  const [instrumentVars, setInstrumentVars] = useState([]);
+  const [pcaStandardize, setPcaStandardize] = useState(true);
   const [analyzeResults, setAnalyzeResults] = useState(null);
   const [doAnalyze, setDoAnalyze] = useState("");
   const [layer2Loading, setLayer2Loading] = useState(false);
@@ -921,6 +1053,9 @@ export default function Home() {
         mediator_var: mediatorVar || null,
         group_var: groupVar || null,
         group_method: groupMethod,
+        endog_vars: endogVars.length ? endogVars : null,
+        instrument_vars: instrumentVars.length ? instrumentVars : null,
+        standardize: pcaStandardize,
         interpret,
         custom_question: customQ || null,
       };
@@ -950,11 +1085,13 @@ export default function Home() {
   const uniqueMappedCols = [...new Set(mappedCols)];
   const cleanedCols = cleanedData?.columns || [];
   const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did"].includes(t));
-  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "did", "heterogeneity"].includes(t));
+  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "did", "heterogeneity", "iv"].includes(t));
   const needsModeration = analysisTypes.includes("moderation");
   const needsMediation = analysisTypes.includes("mediation");
   const needsDID = analysisTypes.includes("did");
   const needsHeterogeneity = analysisTypes.includes("heterogeneity");
+  const needsIV = analysisTypes.includes("iv");
+  const needsPCA = analysisTypes.includes("pca");
   const needsIndepVars = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "heterogeneity"].includes(t));
   const sectionNum = (base) => filePreviews.length > 1 ? base : base - 1;
 
@@ -1227,9 +1364,19 @@ export default function Home() {
               <div className="sh"><span className="sn">02</span><span className="st">变量配置</span></div>
               <div className="var-box">
                 <div className="var-row">
-                  <span className="vl">参与分析的变量 <span className="vh">不选=全部数值列</span></span>
+                  <span className="vl">参与分析的变量 <span className="vh">不选=全部数值列{needsPCA ? "；主成分分析将对这里选中的变量做降维" : ""}</span></span>
                   <TagSelector options={cleanedCols} selected={selectedVars} onChange={setSelectedVars} dtypes={cleanedData?.dtypes} />
                 </div>
+                {needsPCA && (
+                  <div className="var-row">
+                    <span className="vl">是否标准化 <span className="vh">变量量纲不一致时建议标准化（基于相关系数矩阵），对应 Stata pca 默认行为</span></span>
+                    <div className="radio-group">
+                      {[[true, "标准化（相关系数矩阵）"], [false, "不标准化（协方差矩阵）"]].map(([v, l]) => (
+                        <label key={String(v)} className={`radio-btn ${pcaStandardize === v ? "sel" : ""}`} onClick={() => setPcaStandardize(v)}>{l}</label>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {needsReg && (
                   <>
                     <div className="var-row">
@@ -1275,6 +1422,18 @@ export default function Home() {
                         </div>
                       </>
                     )}
+                    {needsIV && (
+                      <>
+                        <div className="var-row">
+                          <span className="vl">内生解释变量 Endogenous <span className="vh">与误差项相关、需要工具变量纠正的解释变量</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar && !instrumentVars.includes(c))} selected={endogVars} onChange={setEndogVars} dtypes={cleanedData?.dtypes} />
+                        </div>
+                        <div className="var-row">
+                          <span className="vl">工具变量 Instruments <span className="vh">与内生变量相关、但与误差项无关；数量须 ≥ 内生变量数</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar && !endogVars.includes(c))} selected={instrumentVars} onChange={setInstrumentVars} dtypes={cleanedData?.dtypes} />
+                        </div>
+                      </>
+                    )}
                     {needsDID && (
                       <>
                         <div className="var-row">
@@ -1291,7 +1450,7 @@ export default function Home() {
                     )}
                     <div className="var-row">
                       <span className="vl">控制变量 <span className="vh">可不选</span></span>
-                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && c !== moderatorVar && c !== treatmentVar && c !== mediatorVar && c !== groupVar)} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && c !== moderatorVar && c !== treatmentVar && c !== mediatorVar && c !== groupVar && !endogVars.includes(c) && !instrumentVars.includes(c))} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
                     </div>
                   </>
                 )}
@@ -1395,6 +1554,7 @@ export default function Home() {
                     ))}
                     {analyzeResults.results?.descriptive && <DescriptiveTable data={analyzeResults.results.descriptive} />}
                     {analyzeResults.results?.correlation && <CorrelationTable data={analyzeResults.results.correlation} />}
+                    {analyzeResults.results?.pca && <PCATable data={analyzeResults.results.pca} />}
                     <CompareTable results={analyzeResults.results} />
                     {analyzeResults.results?.ols && <RegressionTable data={analyzeResults.results.ols} label="OLS 回归结果" />}
                     {analyzeResults.results?.panel_fe && <RegressionTable data={analyzeResults.results.panel_fe} label="固定效应回归（xtreg, fe）" />}
@@ -1424,10 +1584,21 @@ export default function Home() {
                             <br />{md.conclusion}
                             <br /><span style={{ fontSize: 11, opacity: 0.75 }}>{md.notes}</span>
                           </div>
+                          {md.sobel && (
+                            <div className={md.sobel.significant ? "hausman-box" : "dropped-warn"}>
+                              <strong>Sobel 检验（间接效应 a×b 显著性）</strong>
+                              <br />间接效应 = {md.sobel.indirect_effect}，标准误 = {md.sobel.se}，
+                              z = {md.sobel.z_stat}<sup className="sig">{md.sobel.sig}</sup>，p = {md.sobel.p_value}
+                              <br />{md.sobel.significant
+                                ? "间接效应在 p<0.1 水平上显著，与 Baron-Kenny 三步法结论可相互印证"
+                                : "间接效应未通过 Sobel 检验（p≥0.1），建议结合三步法结论谨慎解读中介作用"}
+                            </div>
+                          )}
                         </>
                       );
                     })()}
                     {analyzeResults.results?.heterogeneity && <HeterogeneityTable data={analyzeResults.results.heterogeneity} />}
+                    {analyzeResults.results?.iv && <IVTable data={analyzeResults.results.iv} />}
                     {analyzeResults.results?.did && (() => {
                       const d = analyzeResults.results.did;
                       const pt = d.parallel_trends;
