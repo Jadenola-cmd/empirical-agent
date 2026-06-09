@@ -129,6 +129,80 @@ function exportXlsx(analyzeResults, cleanedData) {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cmpRows), "回归对比");
     }
 
+    if (r.pca?.components?.length) {
+      const p = r.pca;
+      const su = p.suitability;
+      const cs = p.composite_score;
+      const rows = [];
+      rows.push(["主成分分析结果", `${p.matrix_label}，N=${p.n}`]);
+      rows.push([]);
+      if (su) {
+        rows.push(["适用性检验"]);
+        rows.push(["KMO 抽样适当性度量", su.kmo ?? "—", su.kmo_label]);
+        rows.push([
+          "Bartlett 球形检验",
+          su.bartlett_chi2 != null ? `χ²(${su.bartlett_df})=${su.bartlett_chi2}` : "—",
+          su.bartlett_p != null ? `p=${su.bartlett_p}` : "",
+          su.bartlett_sig ? "显著，适合做主成分分析" : "不显著，可能不适合做主成分分析",
+        ]);
+        rows.push([]);
+      }
+      rows.push(["主成分", "特征值", "方差贡献率", "累计贡献率", "是否保留"]);
+      p.components.forEach(c => rows.push([
+        c.component, c.eigenvalue, `${(c.explained * 100).toFixed(2)}%`, `${(c.cumulative * 100).toFixed(2)}%`, c.retained ? "Yes" : "—",
+      ]));
+      rows.push([]);
+      rows.push([`主成分载荷（已保留 ${p.n_retained} 个主成分）`]);
+      rows.push(["变量", ...Array.from({ length: p.n_retained }, (_, j) => `Comp${j + 1}`)]);
+      p.loadings.forEach(row => rows.push([row.variable, ...Array.from({ length: p.n_retained }, (_, j) => row[`Comp${j + 1}`])]));
+      if (cs) {
+        rows.push([]);
+        rows.push(["综合得分"]);
+        rows.push([cs.formula]);
+        rows.push(["均值", cs.mean, "标准差", cs.std, "最小值", cs.min, "最大值", cs.max]);
+        rows.push(["权重", ...cs.weights.map(w => `${w.component}=${w.weight}`)]);
+        rows.push([]);
+        rows.push(["综合得分最高的样本（行号/得分）", ...cs.top.map(t => `#${t.row}: ${t.score}`)]);
+        rows.push(["综合得分最低的样本（行号/得分）", ...cs.bottom.map(t => `#${t.row}: ${t.score}`)]);
+      }
+      rows.push([]);
+      rows.push([p.notes || ""]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "主成分分析");
+    }
+
+    if (r.iv?.coefficients?.length) {
+      const iv = r.iv;
+      const cons = iv.coefficients.find(c => c.variable === "_cons");
+      const mainVars = iv.coefficients.filter(c => c.variable !== "_cons");
+      const endogSet = new Set(iv.endog_vars || []);
+      const rows = [];
+      rows.push(["工具变量法 2SLS 回归结果", "(1)"]);
+      rows.push(["", iv.dep_var]);
+      rows.push([]);
+      mainVars.forEach(c => {
+        rows.push([`${c.variable}${endogSet.has(c.variable) ? "（内生）" : ""}`, `${(c.coef?.toFixed(3) ?? "—")}${c.sig}`]);
+        rows.push(["", `(${c.t_stat?.toFixed(2) ?? "—"})`]);
+      });
+      if (cons) {
+        rows.push(["_cons", `${(cons.coef?.toFixed(3) ?? "—")}${cons.sig}`]);
+        rows.push(["", `(${cons.t_stat?.toFixed(2) ?? "—"})`]);
+      }
+      rows.push(["N", iv.n]);
+      rows.push([]);
+      if (iv.first_stage?.length) {
+        rows.push(["第一阶段诊断（弱工具变量检验，经验法则 F<10）"]);
+        iv.first_stage.forEach(f => rows.push([f.endog_var, `F = ${f.f_stat}`, f.weak ? "弱工具变量" : "通过检验"]));
+        rows.push([]);
+      }
+      if (iv.overid_test) {
+        rows.push(["过度识别检验（Sargan）", `统计量=${iv.overid_test.stat}`, `p=${iv.overid_test.p_value}`]);
+        rows.push([iv.overid_test.conclusion]);
+        rows.push([]);
+      }
+      rows.push([iv.notes || "括号内为t值，***p<0.01, **p<0.05, *p<0.1"]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "工具变量2SLS");
+    }
+
     if (r.ols) { const ws = buildRegSheet(r.ols, "OLS 回归结果"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "OLS"); }
     if (r.panel_fe) { const ws = buildRegSheet(r.panel_fe, "固定效应回归（xtreg, fe）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "固定效应"); }
     if (r.panel_re) { const ws = buildRegSheet(r.panel_re, "随机效应回归（xtreg, re）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "随机效应"); }
@@ -316,10 +390,55 @@ const ANALYSIS_REGISTRY = [
   { type: "panel_fe",      icon: "🏛️", title: "固定效应",    desc: "entity FE · Hausman检验", category: "主回归分析" },
   { type: "panel_re",      icon: "🎲", title: "随机效应",     desc: "GLS估计 · xtreg, re", category: "主回归分析" },
   { type: "did",           icon: "⏱️", title: "双重差分 DID", desc: "面板双向FE · 平行趋势检验", category: "因果识别" },
+  { type: "did_event",     icon: "📅", title: "多时点DID事件研究", desc: "事件窗口系数 · 平行趋势可视化检验", category: "因果识别" },
+  { type: "iv",            icon: "🪛", title: "工具变量法 2SLS", desc: "两阶段最小二乘 · 弱工具变量检验", category: "因果识别" },
   { type: "moderation",    icon: "🔀", title: "调节效应分析", desc: "交互项回归 · 自动中心化", category: "机制检验" },
-  { type: "mediation",     icon: "🧩", title: "中介效应分析", desc: "Baron-Kenny 三步法", category: "机制检验" },
+  { type: "mediation",     icon: "🧩", title: "中介效应分析", desc: "Baron-Kenny 三步法 + Sobel 检验", category: "机制检验" },
   { type: "heterogeneity", icon: "🧬", title: "异质性分析",   desc: "分组回归对比", category: "稳健性检验" },
+  { type: "pca",           icon: "🧮", title: "主成分分析 PCA", desc: "降维 · 载荷与方差贡献率", category: "数据探索" },
 ];
+
+function EventStudyTable({ data }) {
+  if (!data?.event_coefs?.length) return null;
+  const pt = data.parallel_trends_event;
+  return (
+    <div className="result-block">
+      <div className="rb-title">多时点DID事件研究（个体+时间双向固定效应）</div>
+      <div className="rb-meta">
+        被解释变量：{data.dep_var}　观测数：{data.n}　个体数：{data.n_entities}
+        　窗口：[{-data.window_pre}, {data.window_post}]　基期：t=-1
+      </div>
+      <table className="reg-table">
+        <thead>
+          <tr>
+            <th>相对期（t）</th>
+            <th>系数</th>
+            <th>标准误</th>
+            <th>p 值</th>
+            <th>95% CI</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.event_coefs.map(row => (
+            <tr key={row.period} style={row.is_base ? { color: "#999", fontStyle: "italic" } : row.period < 0 ? { background: "#f0f4ff" } : {}}>
+              <td style={{ fontWeight: 600 }}>{row.period >= 0 ? `t+${row.period}` : `t${row.period}`}{row.is_base ? "（基期）" : ""}</td>
+              <td>{row.is_base ? "0（参照）" : `${row.coef?.toFixed(4)}${row.sig}`}</td>
+              <td>{row.is_base ? "—" : row.se?.toFixed(4)}</td>
+              <td>{row.p_value == null ? "—" : row.p_value < 0.001 ? "<0.001" : row.p_value?.toFixed(4)}</td>
+              <td>{row.is_base ? "—" : `[${row.ci_low?.toFixed(4)}, ${row.ci_high?.toFixed(4)}]`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {pt && (
+        <div className={pt.pass ? "hausman-box" : "dropped-warn"} style={{ marginTop: 10 }}>
+          <strong>平行趋势检验</strong>（政策前各期系数个别显著性）：{pt.conclusion}
+        </div>
+      )}
+      <div className="rb-note">{data.notes}</div>
+    </div>
+  );
+}
 
 function RegressionTable({ data, label, bracketMode = "t" }) {
   if (!data?.coefficients?.length) return null;
@@ -678,6 +797,191 @@ function HeterogeneityTable({ data }) {
   );
 }
 
+// ─── 工具变量法 2SLS：回归结果 + 第一阶段 F 检验 + 过度识别检验 ──
+function IVTable({ data }) {
+  const [bracketMode, setBracketMode] = useState("t");
+  if (!data?.coefficients?.length) return null;
+  const cons = data.coefficients.find(c => c.variable === "_cons");
+  const mainVars = data.coefficients.filter(c => c.variable !== "_cons");
+  const endogSet = new Set(data.endog_vars || []);
+
+  function renderCoefCell(c) {
+    const bracket = bracketMode === "se" ? c.std_error?.toFixed(3) : c.t_stat?.toFixed(2);
+    return (
+      <td className="col-reg">
+        <div>{(c.coef?.toFixed(3) ?? "—")}<sup className="sig">{c.sig}</sup></div>
+        <div className="tval">({bracket ?? "—"})</div>
+      </td>
+    );
+  }
+
+  return (
+    <div className="result-block">
+      <div className="tbl-title-row">
+        <span className="tbl-title">工具变量法 2SLS 回归结果</span>
+        <span className="bracket-toggle">
+          括号内：
+          <button className={`btn-tog ${bracketMode === "t" ? "active" : ""}`} onClick={() => setBracketMode("t")}>t 值</button>
+          <button className={`btn-tog ${bracketMode === "se" ? "active" : ""}`} onClick={() => setBracketMode("se")}>标准误</button>
+        </span>
+      </div>
+      <table className="acad-table reg-tbl">
+        <thead><tr>
+          <th className="col-var"></th>
+          <th className="col-reg">(1)<br /><span className="depvar">{data.dep_var}</span></th>
+        </tr></thead>
+        <tbody>
+          {mainVars.map((c, i) => (
+            <tr key={i} className={endogSet.has(c.variable) ? "dummy-coef-row" : ""}>
+              <td className="col-var">{c.variable}{endogSet.has(c.variable) && <span className="vh"> (内生)</span>}</td>
+              {renderCoefCell(c)}
+            </tr>
+          ))}
+          {cons && (
+            <tr>
+              <td className="col-var">_cons</td>
+              {renderCoefCell(cons)}
+            </tr>
+          )}
+          <tr className="fe-row"><td className="col-var">工具变量</td><td className="col-reg">{(data.instrument_vars || []).join(", ")}</td></tr>
+          <tr className="stat-row"><td className="col-var">N</td><td className="col-reg">{data.n?.toLocaleString()}</td></tr>
+          <tr className="stat-row"><td className="col-var">R²</td><td className="col-reg">{data.r2?.toFixed(3) ?? "—"}</td></tr>
+        </tbody>
+      </table>
+      {data.first_stage?.length > 0 && (
+        <div className={data.first_stage.some(f => f.weak) ? "dropped-warn" : "hausman-box"}>
+          <strong>第一阶段 F 检验（弱工具变量诊断）</strong>
+          {data.first_stage.map(f => (
+            <div key={f.variable}>
+              {f.variable}：F = {f.f_stat}，p = {f.f_pvalue}
+              {f.weak ? "（F<10，存在弱工具变量风险）" : "（F≥10，未发现弱工具变量问题）"}
+            </div>
+          ))}
+        </div>
+      )}
+      {data.overid_test && (
+        <div className={data.overid_test.p_value >= 0.1 ? "hausman-box" : "dropped-warn"}>
+          <strong>过度识别检验（Sargan）</strong>：统计量={data.overid_test.stat}，p={data.overid_test.p_value}
+          <br />{data.overid_test.conclusion}
+        </div>
+      )}
+      <div className="tbl-note">{data.notes}</div>
+    </div>
+  );
+}
+
+// ─── 主成分分析 PCA：方差贡献率表 + 载荷表 ──
+function PCATable({ data }) {
+  if (!data?.components?.length) return null;
+  const su = data.suitability;
+  const cs = data.composite_score;
+  return (
+    <div className="result-block">
+      <div className="tbl-title">主成分分析结果（{data.matrix_label}，N={data.n?.toLocaleString()}）</div>
+      {su && (
+        <div className={(su.kmo != null && su.kmo >= 0.6 && su.bartlett_sig) ? "hausman-box" : "dropped-warn"} style={{ marginBottom: 16 }}>
+          <strong>适用性检验</strong>
+          <br />KMO 抽样适当性度量 = {su.kmo != null ? su.kmo.toFixed(4) : "—"}（{su.kmo_label}）
+          <br />Bartlett 球形检验：{su.bartlett_chi2 != null
+            ? <>χ²({su.bartlett_df}) = {su.bartlett_chi2.toFixed(3)}，p {su.bartlett_p < 0.001 ? "< 0.001" : `= ${su.bartlett_p.toFixed(4)}`}
+                {su.bartlett_sig ? "，显著（拒绝相关系数矩阵为单位矩阵的原假设，适合做主成分分析）" : "，不显著（变量间相关性可能不足，不太适合做主成分分析）"}</>
+            : "—（相关系数矩阵奇异，无法计算）"}
+        </div>
+      )}
+      <div className="tbl-scroll">
+        <table className="acad-table reg-tbl">
+          <thead><tr>
+            <th className="col-var">主成分</th>
+            <th className="col-reg">特征值</th>
+            <th className="col-reg">方差贡献率</th>
+            <th className="col-reg">累计贡献率</th>
+            <th className="col-reg">是否保留</th>
+          </tr></thead>
+          <tbody>
+            {data.components.map(c => (
+              <tr key={c.component} className={c.retained ? "" : "dummy-coef-row"}>
+                <td className="col-var">{c.component}</td>
+                <td className="col-reg">{c.eigenvalue.toFixed(3)}</td>
+                <td className="col-reg">{(c.explained * 100).toFixed(2)}%</td>
+                <td className="col-reg">{(c.cumulative * 100).toFixed(2)}%</td>
+                <td className="col-reg">{c.retained ? "Yes" : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="tbl-title" style={{ marginTop: 16 }}>主成分载荷（仅展示已保留的 {data.n_retained} 个主成分）</div>
+      <div className="tbl-scroll">
+        <table className="acad-table reg-tbl">
+          <thead><tr>
+            <th className="col-var">变量</th>
+            {Array.from({ length: data.n_retained }, (_, j) => (
+              <th key={j} className="col-reg">Comp{j + 1}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {data.loadings.map(row => (
+              <tr key={row.variable}>
+                <td className="col-var">{row.variable}</td>
+                {Array.from({ length: data.n_retained }, (_, j) => (
+                  <td key={j} className="col-reg">{row[`Comp${j + 1}`]?.toFixed(3)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {cs && (
+        <>
+          <div className="tbl-title" style={{ marginTop: 16 }}>综合得分（按方差贡献率加权）</div>
+          <div className="hausman-box" style={{ marginBottom: 12 }}>
+            {cs.formula}
+            <br />均值 = {cs.mean.toFixed(4)}　标准差 = {cs.std.toFixed(4)}　最小值 = {cs.min.toFixed(4)}　最大值 = {cs.max.toFixed(4)}
+            {data.score_column && (
+              <><br /><strong>已自动生成新变量「{data.score_column}」</strong>并写入清洗数据，可直接在后续回归等分析中作为变量选用（无需重新清洗）</>
+            )}
+          </div>
+          <div className="tbl-scroll">
+            <table className="acad-table reg-tbl">
+              <thead><tr>
+                <th className="col-var">权重</th>
+                {cs.weights.map(w => <th key={w.component} className="col-reg">{w.component}</th>)}
+              </tr></thead>
+              <tbody>
+                <tr>
+                  <td className="col-var">方差贡献率占比</td>
+                  {cs.weights.map(w => <td key={w.component} className="col-reg">{w.weight.toFixed(4)}</td>)}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="tbl-scroll" style={{ marginTop: 8 }}>
+            <table className="acad-table reg-tbl">
+              <thead><tr>
+                <th className="col-var">综合得分最高的样本（行号）</th>
+                <th className="col-reg">得分</th>
+                <th className="col-var">综合得分最低的样本（行号）</th>
+                <th className="col-reg">得分</th>
+              </tr></thead>
+              <tbody>
+                {cs.top.map((t, i) => (
+                  <tr key={i}>
+                    <td className="col-var">#{t.row}</td>
+                    <td className="col-reg">{t.score.toFixed(4)}</td>
+                    <td className="col-var">#{cs.bottom[i]?.row}</td>
+                    <td className="col-reg">{cs.bottom[i] != null ? cs.bottom[i].score.toFixed(4) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      <div className="tbl-note">{data.notes}</div>
+    </div>
+  );
+}
+
 function TagSelector({ options, selected, onChange, single, dtypes }) {
   function dtBadge(col) {
     if (!dtypes) return null;
@@ -719,6 +1023,8 @@ export default function Home() {
   const [dropCols, setDropCols] = useState([]);
   const [strCols, setStrCols] = useState([]);
   const [logVars, setLogVars] = useState([]);
+  const [dedupVars, setDedupVars] = useState([]);
+  const [dedupKeep, setDedupKeep] = useState("first");
   const [winsorizeVars, setWinsorizeVars] = useState([]);
   const [winsorizeLower, setWinsorizeLower] = useState(1);
   const [winsorizeUpper, setWinsorizeUpper] = useState(99);
@@ -747,9 +1053,15 @@ export default function Home() {
   const [moderatorVar, setModeratorVar] = useState("");
   const [treatmentVar, setTreatmentVar] = useState("");
   const [policyTime, setPolicyTime] = useState("");
+  const [treatTimeVar, setTreatTimeVar] = useState("");
+  const [windowPre, setWindowPre] = useState(3);
+  const [windowPost, setWindowPost] = useState(3);
   const [mediatorVar, setMediatorVar] = useState("");
   const [groupVar, setGroupVar] = useState("");
   const [groupMethod, setGroupMethod] = useState("median");
+  const [endogVars, setEndogVars] = useState([]);
+  const [instrumentVars, setInstrumentVars] = useState([]);
+  const [pcaStandardize, setPcaStandardize] = useState(true);
   const [analyzeResults, setAnalyzeResults] = useState(null);
   const [doAnalyze, setDoAnalyze] = useState("");
   const [layer2Loading, setLayer2Loading] = useState(false);
@@ -879,6 +1191,8 @@ export default function Home() {
       outlier_threshold: outlierThreshold,
       drop_cols: dropCols,
       str_cols: strCols,
+      dedup_vars: dedupVars,
+      dedup_keep: dedupKeep,
       log_vars: logVars,
       winsorize_vars: winsorizeVars,
       winsorize_lower: winsorizeLower,
@@ -918,9 +1232,15 @@ export default function Home() {
         moderator_var: moderatorVar || null,
         treatment_var: treatmentVar || null,
         policy_time: policyTime === "" ? null : policyTime,
+        treat_time_var: treatTimeVar || null,
+        window_pre: windowPre,
+        window_post: windowPost,
         mediator_var: mediatorVar || null,
         group_var: groupVar || null,
         group_method: groupMethod,
+        endog_vars: endogVars.length ? endogVars : null,
+        instrument_vars: instrumentVars.length ? instrumentVars : null,
+        standardize: pcaStandardize,
         interpret,
         custom_question: customQ || null,
       };
@@ -938,6 +1258,22 @@ export default function Home() {
       if (!res.ok) throw new Error(json.detail || "分析失败");
       setAnalyzeResults(json);
       setDoAnalyze(json.do_analyze || "");
+
+      // PCA 综合得分已由后端写回完整数据并生成新的 cleaned_session_id：
+      // 同步更新前端缓存的清洗数据/会话，使综合得分可作为新变量在后续回归分析中选用
+      const pcaResult = json.results?.pca;
+      if (pcaResult?.new_cleaned_session_id && pcaResult?.score_column) {
+        const col = pcaResult.score_column;
+        const scoreMap = {};
+        (pcaResult.composite_score?.values || []).forEach(v => { scoreMap[v.row] = v.score; });
+        setCleanedSessionId(pcaResult.new_cleaned_session_id);
+        setCleanedData(prev => prev ? {
+          ...prev,
+          data: prev.data.map((rec, i) => ({ ...rec, [col]: scoreMap[i] ?? null })),
+          columns: prev.columns.includes(col) ? prev.columns : [...prev.columns, col],
+          dtypes: { ...prev.dtypes, [col]: "float64" },
+        } : prev);
+      }
     } catch (e) { alert("分析失败：" + e.message); }
     setLayer2Loading(false);
   }
@@ -949,12 +1285,15 @@ export default function Home() {
   const uniqueCols = [...new Set(allCols)];
   const uniqueMappedCols = [...new Set(mappedCols)];
   const cleanedCols = cleanedData?.columns || [];
-  const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did"].includes(t));
-  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "did", "heterogeneity"].includes(t));
+  const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did", "did_event"].includes(t));
+  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "did", "did_event", "heterogeneity", "iv"].includes(t));
   const needsModeration = analysisTypes.includes("moderation");
   const needsMediation = analysisTypes.includes("mediation");
   const needsDID = analysisTypes.includes("did");
+  const needsDIDEvent = analysisTypes.includes("did_event");
   const needsHeterogeneity = analysisTypes.includes("heterogeneity");
+  const needsIV = analysisTypes.includes("iv");
+  const needsPCA = analysisTypes.includes("pca");
   const needsIndepVars = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "heterogeneity"].includes(t));
   const sectionNum = (base) => filePreviews.length > 1 ? base : base - 1;
 
@@ -968,8 +1307,8 @@ export default function Home() {
       <div className="app">
         <div className="jheader">
           <span className="jname">Empirical Research Platform</span>
-          <a href="/docs" className="jnav-link">使用文档</a>
           <span className="jmeta">数据清洗 · 统计分析 · 论文规范输出</span>
+          <a href="/docs" className="jnav-link">📖 查看使用文档</a>
         </div>
         <div className="title-block">
           <h1>论文实证分析<span>平台</span></h1>
@@ -1132,6 +1471,19 @@ export default function Home() {
               )}
               {uniqueCols.length > 0 && (
                 <div className="config-item">
+                  <label className="cfg-label">删除重复值 <span className="cfg-hint">按选中变量判定重复，常用于清理 1:N / N:N 合并产生的重复行</span></label>
+                  <TagSelector options={uniqueCols} selected={dedupVars} onChange={setDedupVars} />
+                  {dedupVars.length > 0 && (
+                    <div className="radio-group">
+                      {[["first", "保留首次出现"], ["last", "保留末次出现"], ["none", "重复组全部删除"]].map(([v, l]) => (
+                        <label key={v} className={`radio-btn ${dedupKeep === v ? "sel" : ""}`} onClick={() => setDedupKeep(v)}>{l}</label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {uniqueCols.length > 0 && (
+                <div className="config-item">
                   <label className="cfg-label">对数变换 <span className="cfg-hint">生成 ln_xxx 新列</span></label>
                   <TagSelector options={uniqueCols} selected={logVars} onChange={setLogVars} />
                 </div>
@@ -1227,9 +1579,19 @@ export default function Home() {
               <div className="sh"><span className="sn">02</span><span className="st">变量配置</span></div>
               <div className="var-box">
                 <div className="var-row">
-                  <span className="vl">参与分析的变量 <span className="vh">不选=全部数值列</span></span>
+                  <span className="vl">参与分析的变量 <span className="vh">不选=全部数值列{needsPCA ? "；主成分分析将对这里选中的变量做降维" : ""}</span></span>
                   <TagSelector options={cleanedCols} selected={selectedVars} onChange={setSelectedVars} dtypes={cleanedData?.dtypes} />
                 </div>
+                {needsPCA && (
+                  <div className="var-row">
+                    <span className="vl">是否标准化 <span className="vh">变量量纲不一致时建议标准化（基于相关系数矩阵），对应 Stata pca 默认行为</span></span>
+                    <div className="radio-group">
+                      {[[true, "标准化（相关系数矩阵）"], [false, "不标准化（协方差矩阵）"]].map(([v, l]) => (
+                        <label key={String(v)} className={`radio-btn ${pcaStandardize === v ? "sel" : ""}`} onClick={() => setPcaStandardize(v)}>{l}</label>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {needsReg && (
                   <>
                     <div className="var-row">
@@ -1275,6 +1637,18 @@ export default function Home() {
                         </div>
                       </>
                     )}
+                    {needsIV && (
+                      <>
+                        <div className="var-row">
+                          <span className="vl">内生解释变量 Endogenous <span className="vh">与误差项相关、需要工具变量纠正的解释变量</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar && !instrumentVars.includes(c))} selected={endogVars} onChange={setEndogVars} dtypes={cleanedData?.dtypes} />
+                        </div>
+                        <div className="var-row">
+                          <span className="vl">工具变量 Instruments <span className="vh">与内生变量相关、但与误差项无关；数量须 ≥ 内生变量数</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar && !endogVars.includes(c))} selected={instrumentVars} onChange={setInstrumentVars} dtypes={cleanedData?.dtypes} />
+                        </div>
+                      </>
+                    )}
                     {needsDID && (
                       <>
                         <div className="var-row">
@@ -1289,9 +1663,43 @@ export default function Home() {
                         </div>
                       </>
                     )}
+                    {needsDIDEvent && (
+                      <>
+                        <div className="var-row">
+                          <span className="vl">处理组变量 Treatment <span className="vh">取值0/1，标识个体是否属于处理组</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={treatmentVar ? [treatmentVar] : []} onChange={v => setTreatmentVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                        </div>
+                        <div className="var-row">
+                          <span className="vl">处理时间列（交错处理）<span className="vh">可选。各个体政策实施年份，未受处理填 NaN；若不填则使用下方统一政策时点</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar && c !== treatmentVar)} selected={treatTimeVar ? [treatTimeVar] : []} onChange={v => setTreatTimeVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                        </div>
+                        {!treatTimeVar && (
+                          <div className="var-row">
+                            <span className="vl">政策时点 Policy Time <span className="vh">同质处理：所有处理组统一的政策实施年份</span></span>
+                            <input className="threshold-input" type="number" value={policyTime}
+                              onChange={e => setPolicyTime(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                              placeholder="如 2015" />
+                          </div>
+                        )}
+                        <div className="var-row">
+                          <span className="vl">事件窗口 <span className="vh">政策前后各展示几期，默认前3后3</span></span>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <span style={{ fontSize: 13, color: "#666" }}>前</span>
+                            <input className="threshold-input" type="number" min="1" max="10" value={windowPre}
+                              onChange={e => setWindowPre(Math.max(1, parseInt(e.target.value) || 3))}
+                              style={{ width: 60 }} />
+                            <span style={{ fontSize: 13, color: "#666" }}>期　后</span>
+                            <input className="threshold-input" type="number" min="1" max="10" value={windowPost}
+                              onChange={e => setWindowPost(Math.max(1, parseInt(e.target.value) || 3))}
+                              style={{ width: 60 }} />
+                            <span style={{ fontSize: 13, color: "#666" }}>期</span>
+                          </div>
+                        </div>
+                      </>
+                    )}
                     <div className="var-row">
                       <span className="vl">控制变量 <span className="vh">可不选</span></span>
-                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && c !== moderatorVar && c !== treatmentVar && c !== mediatorVar && c !== groupVar)} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && c !== moderatorVar && c !== treatmentVar && c !== mediatorVar && c !== groupVar && !endogVars.includes(c) && !instrumentVars.includes(c))} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
                     </div>
                   </>
                 )}
@@ -1395,6 +1803,7 @@ export default function Home() {
                     ))}
                     {analyzeResults.results?.descriptive && <DescriptiveTable data={analyzeResults.results.descriptive} />}
                     {analyzeResults.results?.correlation && <CorrelationTable data={analyzeResults.results.correlation} />}
+                    {analyzeResults.results?.pca && <PCATable data={analyzeResults.results.pca} />}
                     <CompareTable results={analyzeResults.results} />
                     {analyzeResults.results?.ols && <RegressionTable data={analyzeResults.results.ols} label="OLS 回归结果" />}
                     {analyzeResults.results?.panel_fe && <RegressionTable data={analyzeResults.results.panel_fe} label="固定效应回归（xtreg, fe）" />}
@@ -1424,10 +1833,21 @@ export default function Home() {
                             <br />{md.conclusion}
                             <br /><span style={{ fontSize: 11, opacity: 0.75 }}>{md.notes}</span>
                           </div>
+                          {md.sobel && (
+                            <div className={md.sobel.significant ? "hausman-box" : "dropped-warn"}>
+                              <strong>Sobel 检验（间接效应 a×b 显著性）</strong>
+                              <br />间接效应 = {md.sobel.indirect_effect}，标准误 = {md.sobel.se}，
+                              z = {md.sobel.z_stat}<sup className="sig">{md.sobel.sig}</sup>，p = {md.sobel.p_value}
+                              <br />{md.sobel.significant
+                                ? "间接效应在 p<0.1 水平上显著，与 Baron-Kenny 三步法结论可相互印证"
+                                : "间接效应未通过 Sobel 检验（p≥0.1），建议结合三步法结论谨慎解读中介作用"}
+                            </div>
+                          )}
                         </>
                       );
                     })()}
                     {analyzeResults.results?.heterogeneity && <HeterogeneityTable data={analyzeResults.results.heterogeneity} />}
+                    {analyzeResults.results?.iv && <IVTable data={analyzeResults.results.iv} />}
                     {analyzeResults.results?.did && (() => {
                       const d = analyzeResults.results.did;
                       const pt = d.parallel_trends;
@@ -1444,6 +1864,7 @@ export default function Home() {
                         </>
                       );
                     })()}
+                    {analyzeResults.results?.did_event && <EventStudyTable data={analyzeResults.results.did_event} />}
                     {analyzeResults.interpretation && (
                       <div className="interp-result">
                         <div className="ir-title">AI 解读</div>
@@ -1463,11 +1884,11 @@ export default function Home() {
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { background: #f7f5f0; color: #1a1a1a; font-family: 'IBM Plex Sans', sans-serif; min-height: 100vh; }
         .app { max-width: 1000px; margin: 0 auto; padding: 48px 24px; }
-        .jheader { border-top: 3px solid #1a1a1a; border-bottom: 1px solid #1a1a1a; padding: 14px 0 10px; margin-bottom: 36px; display: flex; justify-content: space-between; align-items: baseline; }
+        .jheader { border-top: 3px solid #1a1a1a; border-bottom: 1px solid #1a1a1a; padding: 14px 0 10px; margin-bottom: 36px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
         .jname { font-family: 'Playfair Display', serif; font-size: 13px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; }
         .jmeta { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8a8078; }
-        .jnav-link { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #2c4a8a; text-decoration: none; }
-        .jnav-link:hover { text-decoration: underline; }
+        .jnav-link { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; color: #2c4a8a; text-decoration: none; border: 1px solid #2c4a8a; border-radius: 14px; padding: 5px 14px; white-space: nowrap; transition: background 0.15s, color 0.15s; }
+        .jnav-link:hover { background: #2c4a8a; color: white; }
         .title-block { margin-bottom: 36px; padding-bottom: 28px; border-bottom: 1px solid #ddd8cc; }
         .title-block h1 { font-family: 'Playfair Display', serif; font-size: 30px; font-weight: 700; margin-bottom: 8px; }
         .title-block h1 span { color: #2c4a8a; }

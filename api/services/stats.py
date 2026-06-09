@@ -289,6 +289,25 @@ def run_mediation(
     a_sig = a_path is not None and a_path["p_value"] < SIG_P
     c_prime_sig = c_prime is not None and c_prime["p_value"] < SIG_P
 
+    # Sobel (1982) 检验：以路径 a、b 的系数与标准误检验间接效应 a*b 是否显著，
+    # 作为 Baron-Kenny 三步法的补充验证（z 统计量服从渐近正态分布）
+    sobel = None
+    if a_path is not None and b_path is not None:
+        se_a, se_b = a_path["std_error"], b_path["std_error"]
+        a_coef, b_coef = a_path["coef"], b_path["coef"]
+        se_sobel = (b_coef ** 2 * se_a ** 2 + a_coef ** 2 * se_b ** 2) ** 0.5
+        if se_sobel > 0:
+            z = a_coef * b_coef / se_sobel
+            p = float(2 * (1 - stats.norm.cdf(abs(z))))
+            sobel = {
+                "indirect_effect": round(a_coef * b_coef, 6),
+                "se": round(se_sobel, 6),
+                "z_stat": round(z, 4),
+                "p_value": round(p, 6),
+                "sig": sig_stars(p),
+                "significant": p < SIG_P,
+            }
+
     if not a_sig:
         mediation_type = "无中介效应"
         conclusion = (
@@ -330,9 +349,11 @@ def run_mediation(
         "paths": {"c_total": c_total, "a": a_path, "b": b_path, "c_prime": c_prime},
         "mediation_type": mediation_type,
         "conclusion": conclusion,
+        "sobel": sobel,
         "notes": (
             "Baron & Kenny (1986) 三步法：① Y~X（c）② M~X（a）③ Y~X+M（b、c'）；"
-            "显著性按 p<0.1 判定。该方法对样本量和效应量较敏感，建议结合 Bootstrap 法或 Sobel 检验进一步验证"
+            "显著性按 p<0.1 判定。已附 Sobel (1982) 检验作为间接效应 a*b 的补充验证，"
+            "该方法对样本量和效应量较敏感，建议结合 Bootstrap 法进一步交叉验证"
         ),
     }
 
@@ -400,6 +421,120 @@ def run_did(
 
     result["parallel_trends"] = parallel_trends
     result["notes"] += "；DID 通过个体+时间双向固定效应吸收处理组、时期主效应，仅估计交互项 _did（政策净效应）"
+    return result
+
+
+def run_did_event_study(
+    df: pd.DataFrame,
+    dep_var: str,
+    entity_var: str,
+    time_var: str,
+    treatment_var: str,
+    policy_time: Optional[float] = None,
+    treat_time_var: Optional[str] = None,
+    window_pre: int = 3,
+    window_post: int = 3,
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    """多时点 DID 事件研究（Event Study）。
+    以 t=-1 为基期（参照组），展示各相对期系数，直观呈现政策前平行趋势与政策后动态效应。
+    支持同质处理（所有处理组同一政策时点）和交错处理（各个体处理时点不同）两种模式。
+    对应 Stata: gen rel_time = year - treat_year; xi: xtreg y i.rel_time controls i.year, fe
+    """
+    sub = df.copy()
+    time_numeric = pd.to_numeric(sub[time_var], errors="coerce")
+    sub[entity_var] = sub[entity_var].astype(str).str.strip()
+
+    # 计算各观测的处理开始时间
+    if treat_time_var is not None:
+        # 交错处理模式：直接从列读取，NaN 表示从未受处理
+        treat_time_series = pd.to_numeric(sub[treat_time_var], errors="coerce")
+    else:
+        # 同质处理模式：处理组统一使用 policy_time，对照组为 NaN
+        treat = pd.to_numeric(sub[treatment_var], errors="coerce")
+        treat_time_series = treat.apply(lambda x: policy_time if x == 1 else np.nan)
+
+    # 计算相对时间（控制组/从未受处理组 rel_time 为 NaN）
+    sub["_rel_time"] = time_numeric - treat_time_series
+
+    # 构造事件窗口虚拟变量（t=-1 为基期，不建虚拟变量）
+    periods = [p for p in range(-window_pre, window_post + 1) if p != -1]
+    dummy_cols = []
+    for p in periods:
+        col = f"_evt_m{abs(p)}" if p < 0 else (f"_evt_0" if p == 0 else f"_evt_p{p}")
+        # 对从未受处理的观测（_rel_time 为 NaN）赋值 0
+        sub[col] = (sub["_rel_time"] == p).fillna(False).astype(float)
+        dummy_cols.append(col)
+
+    # 运行 TWFE（个体 + 时间双向固定效应）
+    result = run_panel(
+        sub,
+        dep_var=dep_var,
+        indep_vars=dummy_cols,
+        control_vars=control_vars,
+        entity_var=entity_var,
+        time_var=time_var,
+        model_type="fe",
+        robust_se=robust_se,
+        cluster_var=cluster_var,
+        time_effects=True,
+    )
+    result["type"] = "did_event"
+    result["window_pre"] = window_pre
+    result["window_post"] = window_post
+
+    # 整理事件研究系数序列，插入基期 t=-1（系数固定为 0）
+    coef_map = {c["variable"]: c for c in result.get("coefficients", [])}
+    event_coefs = []
+    for p in range(-window_pre, window_post + 1):
+        if p == -1:
+            event_coefs.append({
+                "period": -1, "coef": 0.0, "se": 0.0,
+                "ci_low": 0.0, "ci_high": 0.0,
+                "p_value": None, "sig": "", "is_base": True,
+            })
+        else:
+            col = f"_evt_m{abs(p)}" if p < 0 else (f"_evt_0" if p == 0 else f"_evt_p{p}")
+            c = coef_map.get(col)
+            if c:
+                event_coefs.append({
+                    "period": p,
+                    "coef": c["coef"],
+                    "se": c["std_error"],
+                    "ci_low": round(c["coef"] - 1.96 * c["std_error"], 6),
+                    "ci_high": round(c["coef"] + 1.96 * c["std_error"], 6),
+                    "p_value": c["p_value"],
+                    "sig": c["sig"],
+                    "is_base": False,
+                })
+    result["event_coefs"] = event_coefs
+
+    # 平行趋势检验：政策前各期（t ∈ [-window_pre, -2]）系数是否均不显著
+    pre_coefs = [ec for ec in event_coefs if ec["period"] < -1 and not ec["is_base"]]
+    if pre_coefs:
+        any_sig = any(ec["p_value"] is not None and ec["p_value"] < 0.1 for ec in pre_coefs)
+        n_sig = sum(1 for ec in pre_coefs if ec["p_value"] is not None and ec["p_value"] < 0.1)
+        result["parallel_trends_event"] = {
+            "n_pre_periods": len(pre_coefs),
+            "n_significant": n_sig,
+            "pass": not any_sig,
+            "conclusion": (
+                f"政策前 {len(pre_coefs)} 期系数均不显著（p≥0.1），平行趋势假设基本成立"
+                if not any_sig else
+                f"政策前 {len(pre_coefs)} 期中有 {n_sig} 期系数显著（p<0.1），平行趋势假设可能不成立，结果需谨慎解释"
+            ),
+        }
+    else:
+        result["parallel_trends_event"] = None
+
+    mode_note = "交错处理（staggered）" if treat_time_var else f"同质处理（政策时点 {policy_time}）"
+    result["notes"] = (
+        f"事件研究窗口 [{-window_pre}, {window_post}]，以 t=-1 为基期（系数归零）；"
+        f"处理模式：{mode_note}；个体+时间双向固定效应，"
+        f"括号内为t值，{result.get('se_type','unadjusted')}标准误，***p<0.01, **p<0.05, *p<0.1"
+    )
     return result
 
 
@@ -698,5 +833,285 @@ def run_heterogeneity(
         "notes": (
             f"按 {group_var}（{method_note}）拆分样本分别估计{'固定效应（xtreg, fe）' if use_panel else 'OLS'}模型，"
             "对照各组核心解释变量系数的方向、大小及显著性差异，是检验异质性的标准做法；分组阈值基于全样本计算，保证各组可比"
+        ),
+    }
+
+
+def run_iv(
+    df: pd.DataFrame,
+    dep_var: str,
+    endog_vars: List[str],
+    instrument_vars: List[str],
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    """工具变量法 2SLS 估计，对应 Stata: ivregress 2sls y controls (endog = instruments)。
+    第一阶段 F 统计量（< 10 视为弱工具变量）与过度识别检验（仅工具变量数 > 内生变量数时报告 Sargan 检验）
+    是 IV 估计结果展示的标配诊断项。
+    """
+    from linearmodels.iv import IV2SLS
+
+    cols_needed = list(dict.fromkeys(
+        [dep_var] + endog_vars + instrument_vars + control_vars + ([cluster_var] if cluster_var else [])
+    ))
+    sub = df[cols_needed].copy()
+
+    for col in [dep_var] + endog_vars + instrument_vars + control_vars:
+        if not pd.api.types.is_object_dtype(sub[col]):
+            sub[col] = pd.to_numeric(sub[col], errors="coerce")
+
+    sub, control_vars_final, dummy_info = _expand_categoricals(sub, control_vars)
+
+    check_cols = [dep_var] + endog_vars + instrument_vars + control_vars_final
+    total_rows = len(sub)
+    sub = sub.dropna(subset=check_cols)
+    if len(sub) == 0:
+        raise ValueError(f"有效数据为空（共 {total_rows} 行），请检查变量选择和缺失值情况")
+
+    y = sub[dep_var]
+    endog = sub[endog_vars]
+    instruments = sub[instrument_vars]
+    exog = sm.add_constant(sub[control_vars_final], has_constant="add") if control_vars_final \
+        else pd.DataFrame({"const": np.ones(len(sub))}, index=sub.index)
+
+    model = IV2SLS(y, exog, endog, instruments)
+
+    if cluster_var:
+        res = model.fit(cov_type="clustered", clusters=sub[cluster_var])
+        se_type = f"clustered({cluster_var})"
+    elif robust_se:
+        res = model.fit(cov_type="robust")
+        se_type = "robust"
+    else:
+        res = model.fit(cov_type="unadjusted")
+        se_type = "conventional"
+
+    coefs = []
+    for name in res.params.index:
+        p = float(res.pvalues[name])
+        coefs.append({
+            "variable":  name if name != "const" else "_cons",
+            "coef":      round(float(res.params[name]), 6),
+            "std_error": round(float(res.std_errors[name]), 6),
+            "t_stat":    round(float(res.tstats[name]), 4),
+            "p_value":   round(p, 6),
+            "sig":       sig_stars(p),
+        })
+
+    # 第一阶段 F 统计量（弱工具变量检验，经验法则 F < 10 视为弱工具变量）
+    first_stage = []
+    try:
+        diag = res.first_stage.diagnostics
+        for ev in endog_vars:
+            if ev in diag.index:
+                row = diag.loc[ev]
+                f_stat = float(row["f.stat"])
+                first_stage.append({
+                    "variable": ev,
+                    "f_stat":   round(f_stat, 4),
+                    "f_pvalue": round(float(row["f.pval"]), 6),
+                    "weak":     f_stat < 10,
+                })
+    except Exception:
+        first_stage = []
+
+    # 过度识别检验：仅当工具变量数 > 内生变量数（过度识别）时有意义
+    overid = None
+    if len(instrument_vars) > len(endog_vars):
+        try:
+            sargan = res.sargan
+            overid = {
+                "stat":       round(float(sargan.stat), 4),
+                "p_value":    round(float(sargan.pval), 6),
+                "conclusion": (
+                    "p<0.1，拒绝原假设，工具变量外生性存疑，建议重新检视工具变量选择"
+                    if sargan.pval < 0.1 else
+                    "p≥0.1，不拒绝原假设，未发现工具变量外生性问题"
+                ),
+            }
+        except Exception:
+            overid = None
+
+    cat_note = (
+        f"；控制变量 {list(dummy_info.keys())} 已自动展开为虚拟变量（drop_first=True，对齐 Stata xi:）"
+        if dummy_info else ""
+    )
+
+    return {
+        "type":             "iv",
+        "dep_var":          dep_var,
+        "endog_vars":       endog_vars,
+        "instrument_vars":  instrument_vars,
+        "control_vars":     control_vars,
+        "n":                int(res.nobs),
+        "r2":               round(float(res.rsquared), 6),
+        "se_type":          se_type,
+        "coefficients":     coefs,
+        "first_stage":      first_stage,
+        "overid_test":      overid,
+        "stata_equivalent": f"ivregress 2sls {dep_var} {' '.join(control_vars_final)} ({' '.join(endog_vars)} = {' '.join(instrument_vars)})",
+        "notes": (
+            "工具变量法 2SLS（两阶段最小二乘）估计；第一阶段 F 统计量 < 10 提示弱工具变量问题，"
+            "过度识别检验（Sargan）仅在工具变量数大于内生变量数时报告" + cat_note
+        ),
+    }
+
+
+def run_pca(
+    df: pd.DataFrame,
+    variables: List[str],
+    n_components: Optional[int] = None,
+    standardize: bool = True,
+) -> Dict:
+    """主成分分析（PCA），基于相关系数矩阵的特征值分解，对应 Stata: pca varlist。
+    标准化（standardize=True）等价于对相关系数矩阵做特征分解，是变量量纲不一致时的标准做法；
+    不标准化则对协方差矩阵做特征分解，对应 Stata: pca varlist, covariance。
+    """
+    sub = df[variables].copy()
+    for col in variables:
+        sub[col] = pd.to_numeric(sub[col], errors="coerce")
+
+    total_rows = len(sub)
+    sub = sub.dropna(subset=variables)
+    if len(sub) == 0:
+        raise ValueError(f"有效数据为空（共 {total_rows} 行），请检查变量选择和缺失值情况")
+    if len(variables) < 2:
+        raise ValueError("主成分分析至少需要选择 2 个变量")
+
+    if standardize:
+        X = (sub[variables] - sub[variables].mean()) / sub[variables].std(ddof=1)
+        matrix_label = "相关系数矩阵"
+    else:
+        X = sub[variables] - sub[variables].mean()
+        matrix_label = "协方差矩阵"
+
+    # 适用性检验：KMO 抽样适当性度量 + Bartlett 球形检验（基于相关系数矩阵，对应 Stata estat kmo / 相应球形检验）
+    corr_matrix = np.corrcoef(sub[variables].values, rowvar=False)
+    n_obs, p_vars = len(sub), len(variables)
+
+    # 用 slogdet 而非 det：相关系数矩阵维度较大时行列式数值极小，直接求 det 容易下溢为 0 导致检验失败
+    sign_r, logdet_r = np.linalg.slogdet(corr_matrix)
+    if sign_r > 0:
+        bartlett_chi2 = float(-((n_obs - 1) - (2 * p_vars + 5) / 6) * logdet_r)
+        bartlett_df = p_vars * (p_vars - 1) / 2
+        bartlett_p = float(1 - stats.chi2.cdf(bartlett_chi2, bartlett_df))
+    else:
+        bartlett_chi2 = bartlett_df = bartlett_p = None
+
+    # 用伪逆而非逆矩阵：变量间高度相关（PCA 的典型场景）时相关系数矩阵接近奇异，直接求逆会报错或数值不稳定
+    inv_r = np.linalg.pinv(corr_matrix)
+    d = np.sqrt(np.diag(inv_r))
+    if np.all(d > 0):
+        partial_corr = -inv_r / np.outer(d, d)
+        np.fill_diagonal(partial_corr, 0)
+        r_sq = corr_matrix ** 2
+        np.fill_diagonal(r_sq, 0)
+        sum_r2 = float(np.sum(r_sq))
+        sum_partial2 = float(np.sum(partial_corr ** 2))
+        kmo = sum_r2 / (sum_r2 + sum_partial2) if (sum_r2 + sum_partial2) > 0 else None
+    else:
+        kmo = None
+
+    def _kmo_label(v):
+        if v is None:
+            return "无法计算（相关系数矩阵退化，可能存在变量完全共线或样本量过小）"
+        if v >= 0.9: return "极好，非常适合做主成分分析"
+        if v >= 0.8: return "良好，适合做主成分分析"
+        if v >= 0.7: return "中等，可以做主成分分析"
+        if v >= 0.6: return "普通，勉强可以做主成分分析"
+        if v >= 0.5: return "较差，不太适合做主成分分析"
+        return "不可接受，不建议做主成分分析"
+
+    suitability = {
+        "kmo": round(kmo, 4) if kmo is not None else None,
+        "kmo_label": _kmo_label(kmo),
+        "bartlett_chi2": round(bartlett_chi2, 4) if bartlett_chi2 is not None else None,
+        "bartlett_df": int(bartlett_df) if bartlett_df is not None else None,
+        "bartlett_p": round(bartlett_p, 6) if bartlett_p is not None else None,
+        "bartlett_sig": bool(bartlett_p is not None and bartlett_p < 0.05),
+    }
+
+    cov_matrix = np.cov(X.values, rowvar=False, ddof=1)
+    eigvals, eigvecs = np.linalg.eigh(cov_matrix)
+
+    # eigh 按升序排列，转为降序（特征值从大到小，对齐 Stata pca 输出顺序）
+    order = np.argsort(eigvals)[::-1]
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+
+    # 特征值符号可能因数值计算翻转，统一令每个主成分中绝对值最大的载荷为正，便于解读
+    for j in range(eigvecs.shape[1]):
+        if eigvecs[np.argmax(np.abs(eigvecs[:, j])), j] < 0:
+            eigvecs[:, j] = -eigvecs[:, j]
+
+    total_var = float(np.sum(eigvals))
+    explained_ratio = eigvals / total_var
+    cumulative_ratio = np.cumsum(explained_ratio)
+
+    k = n_components or int(np.sum(eigvals > 1))  # 默认按 Kaiser 准则（特征值>1）保留主成分
+    k = max(1, min(k, len(variables)))
+
+    components = []
+    for j in range(len(variables)):
+        components.append({
+            "component":  f"Comp{j + 1}",
+            "eigenvalue": round(float(eigvals[j]), 6),
+            "explained":  round(float(explained_ratio[j]), 6),
+            "cumulative": round(float(cumulative_ratio[j]), 6),
+            "retained":   j < k,
+        })
+
+    loadings = []
+    for i, var in enumerate(variables):
+        row = {"variable": var}
+        for j in range(len(variables)):
+            row[f"Comp{j + 1}"] = round(float(eigvecs[i, j]), 6)
+        loadings.append(row)
+
+    # 综合得分：以已保留主成分的方差贡献率占比为权重，对各主成分得分加权求和（论文中常用于构造综合指数）
+    weights = explained_ratio[:k] / float(np.sum(explained_ratio[:k]))
+    scores_matrix = X.values @ eigvecs[:, :k]
+    composite = scores_matrix @ weights
+    composite_series = pd.Series(composite, index=sub.index)
+
+    ranking = composite_series.sort_values(ascending=False)
+    top_n = min(5, len(ranking))
+    composite_score = {
+        "weights": [
+            {"component": f"Comp{j + 1}", "weight": round(float(w), 6)}
+            for j, w in enumerate(weights)
+        ],
+        "mean":  round(float(composite_series.mean()), 6),
+        "std":   round(float(composite_series.std(ddof=1)), 6),
+        "min":   round(float(composite_series.min()), 6),
+        "max":   round(float(composite_series.max()), 6),
+        "top":    [{"row": int(idx), "score": round(float(val), 4)} for idx, val in ranking.head(top_n).items()],
+        "bottom": [{"row": int(idx), "score": round(float(val), 4)} for idx, val in ranking.tail(top_n).items()][::-1],
+        "values": [{"row": int(idx), "score": round(float(val), 6)} for idx, val in composite_series.items()],
+        "formula": (
+            "F = " + " + ".join(f"{w:.4f}×F{j + 1}" for j, w in enumerate(weights))
+            + "（Fj 为第 j 个主成分得分 = 标准化数据 × 对应特征向量；权重为各保留主成分的方差贡献率占已保留主成分总方差贡献率的比例）"
+        ),
+    }
+
+    return {
+        "type":         "pca",
+        "variables":    variables,
+        "n":            int(len(sub)),
+        "standardize":  standardize,
+        "matrix_label": matrix_label,
+        "suitability":  suitability,
+        "components":   components,
+        "loadings":     loadings,
+        "n_retained":   k,
+        "composite_score": composite_score,
+        "stata_equivalent": f"pca {' '.join(variables)}{'' if standardize else ', covariance'}",
+        "notes": (
+            f"基于{matrix_label}的特征值分解；默认按 Kaiser 准则（特征值 > 1）自动保留 {k} 个主成分，"
+            "各主成分载荷已统一符号（绝对值最大载荷为正）便于解读；"
+            "若需手动调整保留数量，累计方差贡献率达到 80% 左右是另一种常见的参考经验标准，可结合碎石图自行判断；"
+            "KMO 与 Bartlett 球形检验用于判断变量是否适合做主成分分析（KMO 越接近 1、Bartlett 检验显著 p<0.05 越适合）；"
+            "综合得分按各保留主成分的方差贡献率加权汇总，可作为构造综合指数变量导出后续使用"
         ),
     }

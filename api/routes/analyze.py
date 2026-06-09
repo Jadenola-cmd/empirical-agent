@@ -12,10 +12,13 @@ from services.stats import (
     run_moderation,
     run_mediation,
     run_did,
+    run_did_event_study,
     run_heterogeneity,
+    run_iv,
+    run_pca,
 )
 from services.interpreter import interpret_results
-from services.session_store import load_cleaned
+from services.session_store import load_cleaned, save_cleaned
 
 router = APIRouter()
 
@@ -50,6 +53,13 @@ class AnalysisRequest(BaseModel):
     mediator_var: Optional[str] = None
     group_var: Optional[str] = None
     group_method: Optional[str] = "median"
+    endog_vars: Optional[List[str]] = None
+    instrument_vars: Optional[List[str]] = None
+    n_components: Optional[int] = None
+    standardize: Optional[bool] = True
+    treat_time_var: Optional[str] = None
+    window_pre: Optional[int] = 3
+    window_post: Optional[int] = 3
     interpret: Optional[bool] = False
     custom_question: Optional[str] = None
 
@@ -101,6 +111,31 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
         se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
         lines.append(f"reg {req.dep_var} {' '.join(all_x)}{se_opt}")
 
+    if "did_event" in req.analysis_types and req.dep_var and req.entity_var and req.time_var and req.treatment_var:
+        wp = req.window_pre if req.window_pre is not None else 3
+        wpo = req.window_post if req.window_post is not None else 3
+        se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
+        if req.treat_time_var:
+            lines.append(f"* 多时点DID事件研究（交错处理，处理时间列：{req.treat_time_var}）：")
+            lines.append(f"gen _rel_time = {req.time_var} - {req.treat_time_var}")
+        else:
+            pt = req.policy_time if req.policy_time is not None else "{政策年份}"
+            lines.append(f"* 多时点DID事件研究（同质处理，政策时点：{pt}）：")
+            lines.append(f"gen _treat_time = {req.treatment_var} * {pt}")
+            lines.append(f"gen _rel_time = {req.time_var} - _treat_time if {req.treatment_var} == 1")
+        lines.append(f"* 构造事件窗口虚拟变量（基期 t=-1 省略）：")
+        lines.append(f"forvalues p = -{wp}/-2 {{")
+        lines.append(f"    gen _evt_m`=abs(`p')' = (_rel_time == `p')")
+        lines.append(f"}}")
+        lines.append(f"gen _evt_0 = (_rel_time == 0)")
+        lines.append(f"forvalues p = 1/{wpo} {{")
+        lines.append(f"    gen _evt_p`p' = (_rel_time == `p')")
+        lines.append(f"}}")
+        all_evts = [f"_evt_m{p}" for p in range(wp, 1, -1)] + ["_evt_0"] + [f"_evt_p{p}" for p in range(1, wpo + 1)]
+        all_x = all_evts + (req.control_vars or [])
+        lines.append(f"xtset {req.entity_var} {req.time_var}")
+        lines.append(f"xtreg {req.dep_var} {' '.join(all_x)} i.{req.time_var}, fe{se_opt}")
+
     if "did" in req.analysis_types and req.dep_var and req.entity_var and req.time_var and req.treatment_var:
         pt = req.policy_time if req.policy_time is not None else "{政策年份}"
         all_x = ["did"] + (req.control_vars or [])
@@ -143,6 +178,25 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
             lines.append(f"reg {req.dep_var} {' '.join(all_x)} if _grp_high == 0{se_opt}  // 低于中位数组")
             lines.append(f"reg {req.dep_var} {' '.join(all_x)} if _grp_high == 1{se_opt}  // 高于中位数组")
 
+    if "iv" in req.analysis_types and req.dep_var and req.endog_vars and req.instrument_vars:
+        se_opt = f", vce(cluster {req.cluster_var})" if req.cluster_var else (", vce(robust)" if req.robust_se else "")
+        lines.append(
+            f"ivregress 2sls {req.dep_var} {' '.join(req.control_vars or [])} "
+            f"({' '.join(req.endog_vars)} = {' '.join(req.instrument_vars)}){se_opt}"
+        )
+        lines.append("estat firststage  // 第一阶段 F 统计量，弱工具变量检验")
+        if len(req.instrument_vars) > len(req.endog_vars):
+            lines.append("estat overid  // 过度识别检验（Sargan/Hansen J）")
+
+    if "pca" in req.analysis_types and req.variables:
+        cov_opt = "" if (req.standardize is None or req.standardize) else ", covariance"
+        lines.append(f"factortest {' '.join(req.variables)}  // KMO 与 Bartlett 球形检验（需 ssc install factortest），用于判断变量是否适合做主成分分析")
+        lines.append(f"pca {' '.join(req.variables)}{cov_opt}")
+        lines.append("predict pc1 pc2 pc3 pc4 pc5 pc6  // 按需保留的主成分个数调整变量名数量")
+        lines.append("* 综合得分 = 各保留主成分按方差贡献率加权汇总，例如保留2个主成分：")
+        lines.append("* gen comp_score = (w1/(w1+w2))*pc1 + (w2/(w1+w2))*pc2")
+        lines.append("* 其中 w1、w2 为 pca 输出中各主成分的方差贡献率（Proportion）")
+
     if "panel_re" in req.analysis_types and req.dep_var:
         all_x = (req.indep_vars or []) + (req.control_vars or [])
         lines.append(f"xtset {req.entity_var} {req.time_var}")
@@ -169,25 +223,36 @@ async def run_analysis(req: AnalysisRequest):
     else:
         raise HTTPException(status_code=400, detail="数据不能为空，请提供 cleaned_session_id 或 data")
 
+    df_full = df  # 保留完整清洗数据的引用，供 PCA 综合得分写回新变量时使用
+
     if req.variables:
         missing_cols = [v for v in req.variables if v not in df.columns]
         if missing_cols:
             raise HTTPException(status_code=400, detail=f"变量不存在：{missing_cols}")
         # Bug3 Fix: 面板分析必须保留 entity_var / time_var，即使用户没有在 variables 里选它们
         keep = list(req.variables)
-        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did", "heterogeneity")):
+        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did", "did_event", "heterogeneity")):
             if req.entity_var and req.entity_var not in keep:
                 keep.append(req.entity_var)
             if req.time_var and req.time_var not in keep:
                 keep.append(req.time_var)
         if "did" in req.analysis_types and req.treatment_var and req.treatment_var not in keep:
             keep.append(req.treatment_var)
+        if "did_event" in req.analysis_types:
+            if req.treatment_var and req.treatment_var not in keep:
+                keep.append(req.treatment_var)
+            if req.treat_time_var and req.treat_time_var not in keep:
+                keep.append(req.treat_time_var)
         if "moderation" in req.analysis_types and req.moderator_var and req.moderator_var not in keep:
             keep.append(req.moderator_var)
         if "mediation" in req.analysis_types and req.mediator_var and req.mediator_var not in keep:
             keep.append(req.mediator_var)
         if "heterogeneity" in req.analysis_types and req.group_var and req.group_var not in keep:
             keep.append(req.group_var)
+        if "iv" in req.analysis_types:
+            for v in (req.endog_vars or []) + (req.instrument_vars or []):
+                if v not in keep:
+                    keep.append(v)
         df = df[keep]
 
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
@@ -295,6 +360,73 @@ async def run_analysis(req: AnalysisRequest):
                     robust_se=req.robust_se,
                     cluster_var=req.cluster_var,
                 )
+
+            elif analysis_type == "did_event":
+                if not req.dep_var or not req.entity_var or not req.time_var:
+                    raise ValueError("多时点DID需要指定 dep_var / entity_var / time_var")
+                if not req.treatment_var:
+                    raise ValueError("多时点DID需要指定处理组变量 treatment_var")
+                if req.treat_time_var is None and req.policy_time is None:
+                    raise ValueError("多时点DID需要指定政策时点（同质处理填 policy_time，交错处理填 treat_time_var）")
+                results["did_event"] = run_did_event_study(
+                    df,
+                    dep_var=req.dep_var,
+                    entity_var=req.entity_var,
+                    time_var=req.time_var,
+                    treatment_var=req.treatment_var,
+                    policy_time=req.policy_time,
+                    treat_time_var=req.treat_time_var,
+                    window_pre=req.window_pre if req.window_pre is not None else 3,
+                    window_post=req.window_post if req.window_post is not None else 3,
+                    control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
+                )
+
+            elif analysis_type == "iv":
+                if not req.dep_var:
+                    raise ValueError("工具变量法需要指定被解释变量 dep_var")
+                if not req.endog_vars:
+                    raise ValueError("工具变量法需要指定内生解释变量 endog_vars")
+                if not req.instrument_vars:
+                    raise ValueError("工具变量法需要指定工具变量 instrument_vars")
+                if len(req.instrument_vars) < len(req.endog_vars):
+                    raise ValueError("工具变量数不能少于内生变量数（识别条件不满足）")
+                results["iv"] = run_iv(
+                    df,
+                    dep_var=req.dep_var,
+                    endog_vars=req.endog_vars,
+                    instrument_vars=req.instrument_vars,
+                    control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
+                )
+
+            elif analysis_type == "pca":
+                if not req.variables or len(req.variables) < 2:
+                    raise ValueError("主成分分析需要至少选择 2 个变量")
+                pca_result = run_pca(
+                    df,
+                    variables=req.variables,
+                    n_components=req.n_components,
+                    standardize=req.standardize if req.standardize is not None else True,
+                )
+                # 将综合得分按行写回完整清洗数据，生成新变量并存为新的 cleaned_session_id，
+                # 使其可在后续回归分析中作为变量直接选用（而不仅仅是展示结果）
+                cs = pca_result.get("composite_score")
+                if cs and cs.get("values") and req.cleaned_session_id:
+                    score_col = "pca_score"
+                    suffix = 2
+                    while score_col in df_full.columns:
+                        score_col = f"pca_score_{suffix}"
+                        suffix += 1
+                    score_map = {item["row"]: item["score"] for item in cs["values"]}
+                    df_full = df_full.copy()
+                    df_full[score_col] = df_full.index.to_series().map(score_map)
+                    new_sid = save_cleaned(df_full)
+                    pca_result["score_column"] = score_col
+                    pca_result["new_cleaned_session_id"] = new_sid
+                results["pca"] = pca_result
 
             elif analysis_type in ("panel_fe", "panel_re"):
                 if not req.dep_var or not req.entity_var or not req.time_var:

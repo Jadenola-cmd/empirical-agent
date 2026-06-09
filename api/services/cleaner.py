@@ -131,6 +131,22 @@ def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, 
         df = df.rename(columns=rename_cols)
         report["steps"].append({"step": "重命名列", "detail": str(rename_cols)})
 
+    # 2.5 删除重复值（按指定变量去重，常用于处理 1:N / N:N 合并产生的重复行）
+    dedup_vars = config.get("dedup_vars", [])
+    dedup_keep = config.get("dedup_keep", "first")  # first / last / none（none=重复组全部删除）
+    if dedup_vars:
+        existing = [c for c in dedup_vars if c in df.columns]
+        if existing:
+            rows_before_dedup = len(df)
+            keep_arg = False if dedup_keep == "none" else dedup_keep
+            df = df.drop_duplicates(subset=existing, keep=keep_arg)
+            dedup_removed = rows_before_dedup - len(df)
+            keep_label = {"first": "保留首次出现", "last": "保留末次出现", "none": "重复组全部删除"}.get(dedup_keep, dedup_keep)
+            report["steps"].append({
+                "step": "删除重复值",
+                "detail": f"按 {existing} 去重（{keep_label}），移除 {dedup_removed} 行"
+            })
+
     # 3. 对数变换
     log_vars = config.get("log_vars", [])
     log_created = []
