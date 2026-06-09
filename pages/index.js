@@ -562,36 +562,31 @@ function EventStudyTable({ data }) {
       </div>
 
       {/* 期刊标准表格 */}
-      <table className="reg-table">
+      <table className="acad-table reg-tbl">
         <thead>
           <tr>
-            <th>相对期</th>
-            <th>系数</th>
-            <th>（标准误）</th>
-            <th>p 值</th>
-            <th>95% CI</th>
+            <th className="col-var">相对期</th>
+            <th className="col-reg">(1)<br /><span className="depvar">{data.dep_var}</span></th>
+            <th className="col-reg">p 值</th>
+            <th className="col-reg">95% CI</th>
           </tr>
         </thead>
         <tbody>
           {data.event_coefs.map(row => {
             const isBase = row.is_base;
             const isPre = !isBase && row.period < 0;
+            const periodLabel = row.period === 0 ? 't = 0' : row.period > 0 ? `t = +${row.period}` : `t = ${row.period}`;
             return (
               <tr key={row.period} style={isBase ? { color: '#999', fontStyle: 'italic', background: '#fafafa' } : isPre ? { background: '#f0f6ff' } : {}}>
-                <td style={{ fontWeight: 600, fontFamily: 'monospace' }}>
-                  {row.period === 0 ? 't = 0' : row.period > 0 ? `t = +${row.period}` : `t = ${row.period}`}
-                  {isBase ? '  （基期）' : ''}
+                <td className="col-var">{periodLabel}{isBase ? '（基期）' : ''}</td>
+                <td className="col-reg">
+                  {isBase ? <><div>0</div><div className="tval">(—)</div></> : <>
+                    <div>{row.coef?.toFixed(4)}<sup className="sig">{row.sig}</sup></div>
+                    <div className="tval">({row.se?.toFixed(4)})</div>
+                  </>}
                 </td>
-                <td style={{ fontFamily: 'monospace' }}>
-                  {isBase ? '0' : `${row.coef?.toFixed(4)}${row.sig}`}
-                </td>
-                <td style={{ fontFamily: 'monospace', color: '#555' }}>
-                  {isBase ? '—' : `(${row.se?.toFixed(4)})`}
-                </td>
-                <td style={{ fontFamily: 'monospace' }}>{fmtP(row.p_value)}</td>
-                <td style={{ fontFamily: 'monospace' }}>
-                  {isBase ? '—' : `[${row.ci_low?.toFixed(4)}, ${row.ci_high?.toFixed(4)}]`}
-                </td>
+                <td className="col-reg">{fmtP(row.p_value)}</td>
+                <td className="col-reg">{isBase ? '—' : `[${row.ci_low?.toFixed(4)}, ${row.ci_high?.toFixed(4)}]`}</td>
               </tr>
             );
           })}
