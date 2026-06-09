@@ -398,44 +398,172 @@ const ANALYSIS_REGISTRY = [
   { type: "pca",           icon: "🧮", title: "主成分分析 PCA", desc: "降维 · 载荷与方差贡献率", category: "数据探索" },
 ];
 
+function EventStudyChart({ coefs, windowPre, windowPost }) {
+  const W = 580, H = 270;
+  const pad = { top: 28, right: 120, bottom: 52, left: 64 };
+  const iW = W - pad.left - pad.right;
+  const iH = H - pad.top - pad.bottom;
+
+  const allY = coefs.flatMap(c => c.is_base ? [0] : [c.ci_low, c.ci_high, c.coef]).filter(v => v != null);
+  const rawMin = Math.min(...allY, 0);
+  const rawMax = Math.max(...allY, 0);
+  const yPad = (rawMax - rawMin) * 0.2 || 0.05;
+  const yMin = rawMin - yPad, yMax = rawMax + yPad;
+
+  const minP = -windowPre, maxP = windowPost;
+  const xOf = p => pad.left + ((p - minP) / (maxP - minP)) * iW;
+  const yOf = v => pad.top + (1 - (v - yMin) / (yMax - yMin)) * iH;
+  const y0 = yOf(0);
+
+  // nice Y ticks
+  const range = yMax - yMin || 0.1;
+  const raw = range / 5;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const nice = [1,2,2.5,5,10].find(s => s * mag >= raw) * mag;
+  const yTicks = [];
+  for (let t = Math.ceil(yMin / nice) * nice; t <= yMax + 1e-9; t = Math.round((t + nice) * 1e9) / 1e9)
+    yTicks.push(t);
+
+  const fmtY = v => Math.abs(v) >= 1 ? v.toFixed(2) : Math.abs(v) >= 0.01 ? v.toFixed(3) : v.toFixed(4);
+  const pLabel = p => p === 0 ? 't=0' : p > 0 ? `t+${p}` : `t${p}`;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: W, display: 'block', margin: '8px auto 0' }}>
+      {/* 零线 */}
+      {y0 >= pad.top && y0 <= H - pad.bottom && (
+        <line x1={pad.left} x2={W - pad.right} y1={y0} y2={y0} stroke="#ddd" strokeWidth={1} />
+      )}
+      {/* 政策时点竖线 */}
+      <line x1={xOf(0)} x2={xOf(0)} y1={pad.top} y2={H - pad.bottom}
+        stroke="#888" strokeWidth={1} strokeDasharray="5,4" />
+      <text x={xOf(0) + 4} y={pad.top + 11} fontSize={9} fill="#888">政策时点</text>
+
+      {/* 误差棒 + 点 */}
+      {coefs.map(c => {
+        const cx = xOf(c.period), cy = yOf(c.coef);
+        const color = c.is_base ? '#bbb' : c.period < 0 ? '#3b82f6' : '#ef4444';
+        return (
+          <g key={c.period}>
+            {!c.is_base && c.ci_low != null && (() => {
+              const yH = yOf(c.ci_high), yL = yOf(c.ci_low);
+              return <>
+                <line x1={cx} x2={cx} y1={yH} y2={yL} stroke={color} strokeWidth={1.5} />
+                <line x1={cx - 4} x2={cx + 4} y1={yH} y2={yH} stroke={color} strokeWidth={1.5} />
+                <line x1={cx - 4} x2={cx + 4} y1={yL} y2={yL} stroke={color} strokeWidth={1.5} />
+              </>;
+            })()}
+            <circle cx={cx} cy={cy} r={c.is_base ? 4 : 5}
+              fill={c.is_base ? 'white' : color}
+              stroke={color} strokeWidth={c.is_base ? 2 : 0} />
+          </g>
+        );
+      })}
+
+      {/* X 轴 */}
+      <line x1={pad.left} x2={W - pad.right} y1={H - pad.bottom} y2={H - pad.bottom} stroke="#555" strokeWidth={1} />
+      {coefs.map(c => (
+        <g key={c.period}>
+          <line x1={xOf(c.period)} x2={xOf(c.period)} y1={H - pad.bottom} y2={H - pad.bottom + 4} stroke="#555" strokeWidth={1} />
+          <text x={xOf(c.period)} y={H - pad.bottom + 15} textAnchor="middle" fontSize={10} fill="#444">
+            {pLabel(c.period)}{c.is_base ? '' : ''}
+          </text>
+          {c.is_base && <text x={xOf(c.period)} y={H - pad.bottom + 26} textAnchor="middle" fontSize={9} fill="#999">(基期)</text>}
+        </g>
+      ))}
+      <text x={pad.left + iW / 2} y={H - 4} textAnchor="middle" fontSize={10} fill="#666">事件时间（以 t=−1 为基期）</text>
+
+      {/* Y 轴 */}
+      <line x1={pad.left} x2={pad.left} y1={pad.top} y2={H - pad.bottom} stroke="#555" strokeWidth={1} />
+      {yTicks.map(t => (
+        <g key={t}>
+          <line x1={pad.left - 4} x2={pad.left} y1={yOf(t)} y2={yOf(t)} stroke="#555" strokeWidth={1} />
+          <text x={pad.left - 7} y={yOf(t) + 4} textAnchor="end" fontSize={10} fill="#444">{fmtY(t)}</text>
+        </g>
+      ))}
+      <text x={13} y={pad.top + iH / 2} textAnchor="middle" fontSize={10} fill="#666"
+        transform={`rotate(-90,13,${pad.top + iH / 2})`}>系数估计值</text>
+
+      {/* 图例 */}
+      <g transform={`translate(${W - pad.right + 12},${pad.top + 10})`}>
+        <circle cx={5} cy={5} r={4} fill="#3b82f6" /><text x={14} y={9} fontSize={10} fill="#444">政策前期</text>
+        <circle cx={5} cy={22} r={4} fill="#ef4444" /><text x={14} y={26} fontSize={10} fill="#444">政策后期</text>
+        <circle cx={5} cy={39} r={4} fill="white" stroke="#bbb" strokeWidth={2} /><text x={14} y={43} fontSize={10} fill="#444">基期 (t=−1)</text>
+        <line x1={1} x2={9} y1={56} y2={56} stroke="#888" strokeWidth={1} strokeDasharray="4,3" /><text x={14} y={60} fontSize={10} fill="#444">政策时点</text>
+        <text x={0} y={76} fontSize={9} fill="#888">误差棒 = 95% CI</text>
+      </g>
+    </svg>
+  );
+}
+
 function EventStudyTable({ data }) {
   if (!data?.event_coefs?.length) return null;
   const pt = data.parallel_trends_event;
+  const seType = { unadjusted: '常规', robust: '稳健', clustered: '聚类' }[data.se_type] || data.se_type;
+  const fmtP = p => p == null ? '—' : p < 0.001 ? '<0.001' : p.toFixed(3);
+
   return (
     <div className="result-block">
-      <div className="rb-title">多时点DID事件研究（个体+时间双向固定效应）</div>
+      <div className="rb-title">多时点 DID 事件研究</div>
       <div className="rb-meta">
-        被解释变量：{data.dep_var}　观测数：{data.n}　个体数：{data.n_entities}
-        　窗口：[{-data.window_pre}, {data.window_post}]　基期：t=-1
+        被解释变量：<strong>{data.dep_var}</strong>　观测数：{data.n}　个体数：{data.n_entities}
+        事件窗口：[{-data.window_pre}, {data.window_post}]　基期：t=−1　标准误：{seType}
       </div>
+
+      {/* 系数图 */}
+      <EventStudyChart coefs={data.event_coefs} windowPre={data.window_pre} windowPost={data.window_post} />
+      <div style={{ textAlign: 'center', fontSize: 11, color: '#888', margin: '4px 0 12px' }}>
+        图：事件研究系数图，点为系数估计值，误差棒为 95% 置信区间
+      </div>
+
+      {/* 期刊标准表格 */}
       <table className="reg-table">
         <thead>
           <tr>
-            <th>相对期（t）</th>
+            <th>相对期</th>
             <th>系数</th>
-            <th>标准误</th>
+            <th>（标准误）</th>
             <th>p 值</th>
             <th>95% CI</th>
           </tr>
         </thead>
         <tbody>
-          {data.event_coefs.map(row => (
-            <tr key={row.period} style={row.is_base ? { color: "#999", fontStyle: "italic" } : row.period < 0 ? { background: "#f0f4ff" } : {}}>
-              <td style={{ fontWeight: 600 }}>{row.period >= 0 ? `t+${row.period}` : `t${row.period}`}{row.is_base ? "（基期）" : ""}</td>
-              <td>{row.is_base ? "0（参照）" : `${row.coef?.toFixed(4)}${row.sig}`}</td>
-              <td>{row.is_base ? "—" : row.se?.toFixed(4)}</td>
-              <td>{row.p_value == null ? "—" : row.p_value < 0.001 ? "<0.001" : row.p_value?.toFixed(4)}</td>
-              <td>{row.is_base ? "—" : `[${row.ci_low?.toFixed(4)}, ${row.ci_high?.toFixed(4)}]`}</td>
-            </tr>
-          ))}
+          {data.event_coefs.map(row => {
+            const isBase = row.is_base;
+            const isPre = !isBase && row.period < 0;
+            return (
+              <tr key={row.period} style={isBase ? { color: '#999', fontStyle: 'italic', background: '#fafafa' } : isPre ? { background: '#f0f6ff' } : {}}>
+                <td style={{ fontWeight: 600, fontFamily: 'monospace' }}>
+                  {row.period === 0 ? 't = 0' : row.period > 0 ? `t = +${row.period}` : `t = ${row.period}`}
+                  {isBase ? '  （基期）' : ''}
+                </td>
+                <td style={{ fontFamily: 'monospace' }}>
+                  {isBase ? '0' : `${row.coef?.toFixed(4)}${row.sig}`}
+                </td>
+                <td style={{ fontFamily: 'monospace', color: '#555' }}>
+                  {isBase ? '—' : `(${row.se?.toFixed(4)})`}
+                </td>
+                <td>{fmtP(row.p_value)}</td>
+                <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                  {isBase ? '—' : `[${row.ci_low?.toFixed(4)}, ${row.ci_high?.toFixed(4)}]`}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+
+      {/* 平行趋势检验 */}
       {pt && (
-        <div className={pt.pass ? "hausman-box" : "dropped-warn"} style={{ marginTop: 10 }}>
-          <strong>平行趋势检验</strong>（政策前各期系数个别显著性）：{pt.conclusion}
+        <div className={pt.pass ? 'hausman-box' : 'dropped-warn'} style={{ marginTop: 10 }}>
+          <strong>平行趋势检验</strong>：{pt.conclusion}
         </div>
       )}
-      <div className="rb-note">{data.notes}</div>
+
+      <div className="rb-note">
+        注：括号内为{seType}标准误；***p&lt;0.01，**p&lt;0.05，*p&lt;0.1；
+        政策前期（蓝色）系数不显著支持平行趋势假设；
+        {data.notes?.split('；').slice(-1)[0]}
+      </div>
     </div>
   );
 }
