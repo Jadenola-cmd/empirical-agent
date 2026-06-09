@@ -203,6 +203,52 @@ function exportXlsx(analyzeResults, cleanedData) {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "工具变量2SLS");
     }
 
+    if (r.did_event?.event_coefs?.length) {
+      const de = r.did_event;
+      const rows = [["多时点 DID 事件研究结果"]];
+      if (de.overall_result?.coefficients?.length) {
+        rows.push([]);
+        rows.push(["整体 ATT 估计（TWFE，_post_treat 系数）"]);
+        const att = de.overall_result.coefficients.find(c => c.variable === "_post_treat");
+        if (att) {
+          rows.push(["变量", "系数", "t值", "p值", "95% CI 下界", "95% CI 上界", "显著性"]);
+          rows.push([
+            "_post_treat（ATT）",
+            att.coef?.toFixed(4),
+            att.t_stat?.toFixed(3),
+            att.p_value?.toFixed(3),
+            (att.coef - 1.96 * att.std_error)?.toFixed(4),
+            (att.coef + 1.96 * att.std_error)?.toFixed(4),
+            att.sig || ""
+          ]);
+          rows.push(["N", de.overall_result.n]);
+        }
+      }
+      rows.push([]);
+      rows.push(["事件研究系数（Event Study，基期 t=−1）"]);
+      rows.push(["相对期", "系数", "标准误", "t值", "p值", "95% CI 下界", "95% CI 上界", "显著性"]);
+      de.event_coefs.forEach(ec => {
+        const label = ec.period === -1 ? "t=−1（基期）" : ec.period > 0 ? `t=+${ec.period}` : `t=${ec.period}`;
+        rows.push([
+          label,
+          ec.is_base ? 0 : ec.coef?.toFixed(4),
+          ec.is_base ? "—" : ec.se?.toFixed(4),
+          "—",
+          ec.p_value != null ? ec.p_value?.toFixed(3) : "—",
+          ec.is_base ? "—" : ec.ci_low?.toFixed(4),
+          ec.is_base ? "—" : ec.ci_high?.toFixed(4),
+          ec.sig || (ec.is_base ? "（归零）" : "")
+        ]);
+      });
+      if (de.parallel_trends_event) {
+        rows.push([]);
+        rows.push(["平行趋势检验", de.parallel_trends_event.conclusion]);
+      }
+      rows.push([]);
+      rows.push([de.notes || ""]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "多时点DID");
+    }
+
     if (r.ols) { const ws = buildRegSheet(r.ols, "OLS 回归结果"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "OLS"); }
     if (r.panel_fe) { const ws = buildRegSheet(r.panel_fe, "固定效应回归（xtreg, fe）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "固定效应"); }
     if (r.panel_re) { const ws = buildRegSheet(r.panel_re, "随机效应回归（xtreg, re）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "随机效应"); }
@@ -2010,7 +2056,17 @@ export default function Home() {
                         </>
                       );
                     })()}
-                    {analyzeResults.results?.did_event && <EventStudyTable data={analyzeResults.results.did_event} />}
+                    {analyzeResults.results?.did_event && (
+                      <>
+                        {analyzeResults.results.did_event.overall_result && (
+                          <RegressionTable
+                            data={analyzeResults.results.did_event.overall_result}
+                            label="多时点 DID 整体效应估计（TWFE，_post_treat 系数即 ATT）"
+                          />
+                        )}
+                        <EventStudyTable data={analyzeResults.results.did_event} />
+                      </>
+                    )}
                     {analyzeResults.interpretation && (
                       <div className="interp-result">
                         <div className="ir-title">AI 解读</div>

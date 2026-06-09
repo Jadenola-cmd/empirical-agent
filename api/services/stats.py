@@ -511,6 +511,28 @@ def run_did_event_study(
                 })
     result["event_coefs"] = event_coefs
 
+    # 整体 ATT 估计：单一 _post_treat 虚拟变量的 TWFE 回归（对应 Stata: gen post_treat = treat*post; xtreg y post_treat controls i.year, fe）
+    sub["_post_treat"] = (
+        (~treat_time_series.isna()) & (time_numeric >= treat_time_series)
+    ).astype(float)
+    try:
+        overall_res = run_panel(
+            sub,
+            dep_var=dep_var,
+            indep_vars=["_post_treat"],
+            control_vars=control_vars,
+            entity_var=entity_var,
+            time_var=time_var,
+            model_type="fe",
+            robust_se=robust_se,
+            cluster_var=cluster_var,
+            time_effects=True,
+        )
+        overall_res["type"] = "fe"
+        result["overall_result"] = overall_res
+    except Exception:
+        result["overall_result"] = None
+
     # 平行趋势检验：政策前各期（t ∈ [-window_pre, -2]）系数是否均不显著
     pre_coefs = [ec for ec in event_coefs if ec["period"] < -1 and not ec["is_base"]]
     if pre_coefs:
