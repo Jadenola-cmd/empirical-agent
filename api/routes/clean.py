@@ -15,10 +15,13 @@ async def upload_and_preview(files: List[UploadFile] = File(...)):
     if len(files) > 5:
         raise HTTPException(status_code=400, detail="最多上传5个文件")
 
+    MAX_SIZE = 50 * 1024 * 1024  # 50MB
     previews = []
     dfs = {}
     for f in files:
         content = await f.read()
+        if len(content) > MAX_SIZE:
+            raise HTTPException(status_code=413, detail=f"{f.filename} 文件超过 50MB 限制，请精简变量或样本后重新上传")
         try:
             df = load_file(content, f.filename)
             dfs[f.filename] = df
