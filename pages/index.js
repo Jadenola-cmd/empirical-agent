@@ -390,12 +390,55 @@ const ANALYSIS_REGISTRY = [
   { type: "panel_fe",      icon: "🏛️", title: "固定效应",    desc: "entity FE · Hausman检验", category: "主回归分析" },
   { type: "panel_re",      icon: "🎲", title: "随机效应",     desc: "GLS估计 · xtreg, re", category: "主回归分析" },
   { type: "did",           icon: "⏱️", title: "双重差分 DID", desc: "面板双向FE · 平行趋势检验", category: "因果识别" },
+  { type: "did_event",     icon: "📅", title: "多时点DID事件研究", desc: "事件窗口系数 · 平行趋势可视化检验", category: "因果识别" },
   { type: "iv",            icon: "🪛", title: "工具变量法 2SLS", desc: "两阶段最小二乘 · 弱工具变量检验", category: "因果识别" },
   { type: "moderation",    icon: "🔀", title: "调节效应分析", desc: "交互项回归 · 自动中心化", category: "机制检验" },
   { type: "mediation",     icon: "🧩", title: "中介效应分析", desc: "Baron-Kenny 三步法 + Sobel 检验", category: "机制检验" },
   { type: "heterogeneity", icon: "🧬", title: "异质性分析",   desc: "分组回归对比", category: "稳健性检验" },
   { type: "pca",           icon: "🧮", title: "主成分分析 PCA", desc: "降维 · 载荷与方差贡献率", category: "数据探索" },
 ];
+
+function EventStudyTable({ data }) {
+  if (!data?.event_coefs?.length) return null;
+  const pt = data.parallel_trends_event;
+  return (
+    <div className="result-block">
+      <div className="rb-title">多时点DID事件研究（个体+时间双向固定效应）</div>
+      <div className="rb-meta">
+        被解释变量：{data.dep_var}　观测数：{data.n}　个体数：{data.n_entities}
+        　窗口：[{-data.window_pre}, {data.window_post}]　基期：t=-1
+      </div>
+      <table className="reg-table">
+        <thead>
+          <tr>
+            <th>相对期（t）</th>
+            <th>系数</th>
+            <th>标准误</th>
+            <th>p 值</th>
+            <th>95% CI</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.event_coefs.map(row => (
+            <tr key={row.period} style={row.is_base ? { color: "#999", fontStyle: "italic" } : row.period < 0 ? { background: "#f0f4ff" } : {}}>
+              <td style={{ fontWeight: 600 }}>{row.period >= 0 ? `t+${row.period}` : `t${row.period}`}{row.is_base ? "（基期）" : ""}</td>
+              <td>{row.is_base ? "0（参照）" : `${row.coef?.toFixed(4)}${row.sig}`}</td>
+              <td>{row.is_base ? "—" : row.se?.toFixed(4)}</td>
+              <td>{row.p_value == null ? "—" : row.p_value < 0.001 ? "<0.001" : row.p_value?.toFixed(4)}</td>
+              <td>{row.is_base ? "—" : `[${row.ci_low?.toFixed(4)}, ${row.ci_high?.toFixed(4)}]`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {pt && (
+        <div className={pt.pass ? "hausman-box" : "dropped-warn"} style={{ marginTop: 10 }}>
+          <strong>平行趋势检验</strong>（政策前各期系数个别显著性）：{pt.conclusion}
+        </div>
+      )}
+      <div className="rb-note">{data.notes}</div>
+    </div>
+  );
+}
 
 function RegressionTable({ data, label, bracketMode = "t" }) {
   if (!data?.coefficients?.length) return null;
@@ -1010,6 +1053,9 @@ export default function Home() {
   const [moderatorVar, setModeratorVar] = useState("");
   const [treatmentVar, setTreatmentVar] = useState("");
   const [policyTime, setPolicyTime] = useState("");
+  const [treatTimeVar, setTreatTimeVar] = useState("");
+  const [windowPre, setWindowPre] = useState(3);
+  const [windowPost, setWindowPost] = useState(3);
   const [mediatorVar, setMediatorVar] = useState("");
   const [groupVar, setGroupVar] = useState("");
   const [groupMethod, setGroupMethod] = useState("median");
@@ -1186,6 +1232,9 @@ export default function Home() {
         moderator_var: moderatorVar || null,
         treatment_var: treatmentVar || null,
         policy_time: policyTime === "" ? null : policyTime,
+        treat_time_var: treatTimeVar || null,
+        window_pre: windowPre,
+        window_post: windowPost,
         mediator_var: mediatorVar || null,
         group_var: groupVar || null,
         group_method: groupMethod,
@@ -1236,11 +1285,12 @@ export default function Home() {
   const uniqueCols = [...new Set(allCols)];
   const uniqueMappedCols = [...new Set(mappedCols)];
   const cleanedCols = cleanedData?.columns || [];
-  const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did"].includes(t));
-  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "did", "heterogeneity", "iv"].includes(t));
+  const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did", "did_event"].includes(t));
+  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "did", "did_event", "heterogeneity", "iv"].includes(t));
   const needsModeration = analysisTypes.includes("moderation");
   const needsMediation = analysisTypes.includes("mediation");
   const needsDID = analysisTypes.includes("did");
+  const needsDIDEvent = analysisTypes.includes("did_event");
   const needsHeterogeneity = analysisTypes.includes("heterogeneity");
   const needsIV = analysisTypes.includes("iv");
   const needsPCA = analysisTypes.includes("pca");
@@ -1613,6 +1663,40 @@ export default function Home() {
                         </div>
                       </>
                     )}
+                    {needsDIDEvent && (
+                      <>
+                        <div className="var-row">
+                          <span className="vl">处理组变量 Treatment <span className="vh">取值0/1，标识个体是否属于处理组</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={treatmentVar ? [treatmentVar] : []} onChange={v => setTreatmentVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                        </div>
+                        <div className="var-row">
+                          <span className="vl">处理时间列（交错处理）<span className="vh">可选。各个体政策实施年份，未受处理填 NaN；若不填则使用下方统一政策时点</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar && c !== treatmentVar)} selected={treatTimeVar ? [treatTimeVar] : []} onChange={v => setTreatTimeVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                        </div>
+                        {!treatTimeVar && (
+                          <div className="var-row">
+                            <span className="vl">政策时点 Policy Time <span className="vh">同质处理：所有处理组统一的政策实施年份</span></span>
+                            <input className="threshold-input" type="number" value={policyTime}
+                              onChange={e => setPolicyTime(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                              placeholder="如 2015" />
+                          </div>
+                        )}
+                        <div className="var-row">
+                          <span className="vl">事件窗口 <span className="vh">政策前后各展示几期，默认前3后3</span></span>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <span style={{ fontSize: 13, color: "#666" }}>前</span>
+                            <input className="threshold-input" type="number" min="1" max="10" value={windowPre}
+                              onChange={e => setWindowPre(Math.max(1, parseInt(e.target.value) || 3))}
+                              style={{ width: 60 }} />
+                            <span style={{ fontSize: 13, color: "#666" }}>期　后</span>
+                            <input className="threshold-input" type="number" min="1" max="10" value={windowPost}
+                              onChange={e => setWindowPost(Math.max(1, parseInt(e.target.value) || 3))}
+                              style={{ width: 60 }} />
+                            <span style={{ fontSize: 13, color: "#666" }}>期</span>
+                          </div>
+                        </div>
+                      </>
+                    )}
                     <div className="var-row">
                       <span className="vl">控制变量 <span className="vh">可不选</span></span>
                       <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && c !== moderatorVar && c !== treatmentVar && c !== mediatorVar && c !== groupVar && !endogVars.includes(c) && !instrumentVars.includes(c))} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
@@ -1780,6 +1864,7 @@ export default function Home() {
                         </>
                       );
                     })()}
+                    {analyzeResults.results?.did_event && <EventStudyTable data={analyzeResults.results.did_event} />}
                     {analyzeResults.interpretation && (
                       <div className="interp-result">
                         <div className="ir-title">AI 解读</div>

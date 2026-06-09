@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-06-09
+
+**新功能**
+- 新增多时点DID事件研究（`did_event`）：支持同质处理（统一政策时点）和交错处理（各个体处理时间不同，通过 `treat_time_var` 列指定）两种模式；以 t=-1 为基期，在指定窗口内构造事件时间虚拟变量，跑个体+时间双向固定效应，展示各期系数与 95% CI；附平行趋势检验（政策前各期系数个别显著性），注册在"因果识别"类别
+- 后端新增 `run_did_event_study`（`stats.py`），`analyze.py` 同步新增 `AnalysisRequest` 字段（`treat_time_var`、`window_pre`、`window_post`）、keep 逻辑、分析分支和 Stata do 生成
+- 前端新增 `EventStudyTable` 组件（分色展示政策前/后各期系数、基期标注、平行趋势检验框），`ANALYSIS_REGISTRY` 注册，参数 UI（处理时间列、事件窗口设置）；前端构建通过
+
+---
+
 ## 2026-06-08（续·二）
 
 **修复**

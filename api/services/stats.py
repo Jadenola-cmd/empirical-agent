@@ -424,6 +424,120 @@ def run_did(
     return result
 
 
+def run_did_event_study(
+    df: pd.DataFrame,
+    dep_var: str,
+    entity_var: str,
+    time_var: str,
+    treatment_var: str,
+    policy_time: Optional[float] = None,
+    treat_time_var: Optional[str] = None,
+    window_pre: int = 3,
+    window_post: int = 3,
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    """多时点 DID 事件研究（Event Study）。
+    以 t=-1 为基期（参照组），展示各相对期系数，直观呈现政策前平行趋势与政策后动态效应。
+    支持同质处理（所有处理组同一政策时点）和交错处理（各个体处理时点不同）两种模式。
+    对应 Stata: gen rel_time = year - treat_year; xi: xtreg y i.rel_time controls i.year, fe
+    """
+    sub = df.copy()
+    time_numeric = pd.to_numeric(sub[time_var], errors="coerce")
+    sub[entity_var] = sub[entity_var].astype(str).str.strip()
+
+    # 计算各观测的处理开始时间
+    if treat_time_var is not None:
+        # 交错处理模式：直接从列读取，NaN 表示从未受处理
+        treat_time_series = pd.to_numeric(sub[treat_time_var], errors="coerce")
+    else:
+        # 同质处理模式：处理组统一使用 policy_time，对照组为 NaN
+        treat = pd.to_numeric(sub[treatment_var], errors="coerce")
+        treat_time_series = treat.apply(lambda x: policy_time if x == 1 else np.nan)
+
+    # 计算相对时间（控制组/从未受处理组 rel_time 为 NaN）
+    sub["_rel_time"] = time_numeric - treat_time_series
+
+    # 构造事件窗口虚拟变量（t=-1 为基期，不建虚拟变量）
+    periods = [p for p in range(-window_pre, window_post + 1) if p != -1]
+    dummy_cols = []
+    for p in periods:
+        col = f"_evt_m{abs(p)}" if p < 0 else (f"_evt_0" if p == 0 else f"_evt_p{p}")
+        # 对从未受处理的观测（_rel_time 为 NaN）赋值 0
+        sub[col] = (sub["_rel_time"] == p).fillna(False).astype(float)
+        dummy_cols.append(col)
+
+    # 运行 TWFE（个体 + 时间双向固定效应）
+    result = run_panel(
+        sub,
+        dep_var=dep_var,
+        indep_vars=dummy_cols,
+        control_vars=control_vars,
+        entity_var=entity_var,
+        time_var=time_var,
+        model_type="fe",
+        robust_se=robust_se,
+        cluster_var=cluster_var,
+        time_effects=True,
+    )
+    result["type"] = "did_event"
+    result["window_pre"] = window_pre
+    result["window_post"] = window_post
+
+    # 整理事件研究系数序列，插入基期 t=-1（系数固定为 0）
+    coef_map = {c["variable"]: c for c in result.get("coefficients", [])}
+    event_coefs = []
+    for p in range(-window_pre, window_post + 1):
+        if p == -1:
+            event_coefs.append({
+                "period": -1, "coef": 0.0, "se": 0.0,
+                "ci_low": 0.0, "ci_high": 0.0,
+                "p_value": None, "sig": "", "is_base": True,
+            })
+        else:
+            col = f"_evt_m{abs(p)}" if p < 0 else (f"_evt_0" if p == 0 else f"_evt_p{p}")
+            c = coef_map.get(col)
+            if c:
+                event_coefs.append({
+                    "period": p,
+                    "coef": c["coef"],
+                    "se": c["std_error"],
+                    "ci_low": round(c["coef"] - 1.96 * c["std_error"], 6),
+                    "ci_high": round(c["coef"] + 1.96 * c["std_error"], 6),
+                    "p_value": c["p_value"],
+                    "sig": c["sig"],
+                    "is_base": False,
+                })
+    result["event_coefs"] = event_coefs
+
+    # 平行趋势检验：政策前各期（t ∈ [-window_pre, -2]）系数是否均不显著
+    pre_coefs = [ec for ec in event_coefs if ec["period"] < -1 and not ec["is_base"]]
+    if pre_coefs:
+        any_sig = any(ec["p_value"] is not None and ec["p_value"] < 0.1 for ec in pre_coefs)
+        n_sig = sum(1 for ec in pre_coefs if ec["p_value"] is not None and ec["p_value"] < 0.1)
+        result["parallel_trends_event"] = {
+            "n_pre_periods": len(pre_coefs),
+            "n_significant": n_sig,
+            "pass": not any_sig,
+            "conclusion": (
+                f"政策前 {len(pre_coefs)} 期系数均不显著（p≥0.1），平行趋势假设基本成立"
+                if not any_sig else
+                f"政策前 {len(pre_coefs)} 期中有 {n_sig} 期系数显著（p<0.1），平行趋势假设可能不成立，结果需谨慎解释"
+            ),
+        }
+    else:
+        result["parallel_trends_event"] = None
+
+    mode_note = "交错处理（staggered）" if treat_time_var else f"同质处理（政策时点 {policy_time}）"
+    result["notes"] = (
+        f"事件研究窗口 [{-window_pre}, {window_post}]，以 t=-1 为基期（系数归零）；"
+        f"处理模式：{mode_note}；个体+时间双向固定效应，"
+        f"括号内为t值，{result.get('se_type','unadjusted')}标准误，***p<0.01, **p<0.05, *p<0.1"
+    )
+    return result
+
+
 def run_panel(
     df: pd.DataFrame,
     dep_var: str,

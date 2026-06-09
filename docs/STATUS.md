@@ -14,7 +14,7 @@
 
 ## 进行中
 
-（暂无）
+多时点DID事件研究（`did_event`）已实现，代码在 `feature/sobel-iv-pca` 分支，待部署验证。
 
 ## 待办
 

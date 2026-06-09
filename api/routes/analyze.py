@@ -12,6 +12,7 @@ from services.stats import (
     run_moderation,
     run_mediation,
     run_did,
+    run_did_event_study,
     run_heterogeneity,
     run_iv,
     run_pca,
@@ -56,6 +57,9 @@ class AnalysisRequest(BaseModel):
     instrument_vars: Optional[List[str]] = None
     n_components: Optional[int] = None
     standardize: Optional[bool] = True
+    treat_time_var: Optional[str] = None
+    window_pre: Optional[int] = 3
+    window_post: Optional[int] = 3
     interpret: Optional[bool] = False
     custom_question: Optional[str] = None
 
@@ -106,6 +110,31 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
         all_x = [f"{x}_c", f"{m}_c", f"{x}_x_{m}"] + (req.control_vars or [])
         se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
         lines.append(f"reg {req.dep_var} {' '.join(all_x)}{se_opt}")
+
+    if "did_event" in req.analysis_types and req.dep_var and req.entity_var and req.time_var and req.treatment_var:
+        wp = req.window_pre if req.window_pre is not None else 3
+        wpo = req.window_post if req.window_post is not None else 3
+        se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
+        if req.treat_time_var:
+            lines.append(f"* 多时点DID事件研究（交错处理，处理时间列：{req.treat_time_var}）：")
+            lines.append(f"gen _rel_time = {req.time_var} - {req.treat_time_var}")
+        else:
+            pt = req.policy_time if req.policy_time is not None else "{政策年份}"
+            lines.append(f"* 多时点DID事件研究（同质处理，政策时点：{pt}）：")
+            lines.append(f"gen _treat_time = {req.treatment_var} * {pt}")
+            lines.append(f"gen _rel_time = {req.time_var} - _treat_time if {req.treatment_var} == 1")
+        lines.append(f"* 构造事件窗口虚拟变量（基期 t=-1 省略）：")
+        lines.append(f"forvalues p = -{wp}/-2 {{")
+        lines.append(f"    gen _evt_m`=abs(`p')' = (_rel_time == `p')")
+        lines.append(f"}}")
+        lines.append(f"gen _evt_0 = (_rel_time == 0)")
+        lines.append(f"forvalues p = 1/{wpo} {{")
+        lines.append(f"    gen _evt_p`p' = (_rel_time == `p')")
+        lines.append(f"}}")
+        all_evts = [f"_evt_m{p}" for p in range(wp, 1, -1)] + ["_evt_0"] + [f"_evt_p{p}" for p in range(1, wpo + 1)]
+        all_x = all_evts + (req.control_vars or [])
+        lines.append(f"xtset {req.entity_var} {req.time_var}")
+        lines.append(f"xtreg {req.dep_var} {' '.join(all_x)} i.{req.time_var}, fe{se_opt}")
 
     if "did" in req.analysis_types and req.dep_var and req.entity_var and req.time_var and req.treatment_var:
         pt = req.policy_time if req.policy_time is not None else "{政策年份}"
@@ -202,13 +231,18 @@ async def run_analysis(req: AnalysisRequest):
             raise HTTPException(status_code=400, detail=f"变量不存在：{missing_cols}")
         # Bug3 Fix: 面板分析必须保留 entity_var / time_var，即使用户没有在 variables 里选它们
         keep = list(req.variables)
-        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did", "heterogeneity")):
+        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did", "did_event", "heterogeneity")):
             if req.entity_var and req.entity_var not in keep:
                 keep.append(req.entity_var)
             if req.time_var and req.time_var not in keep:
                 keep.append(req.time_var)
         if "did" in req.analysis_types and req.treatment_var and req.treatment_var not in keep:
             keep.append(req.treatment_var)
+        if "did_event" in req.analysis_types:
+            if req.treatment_var and req.treatment_var not in keep:
+                keep.append(req.treatment_var)
+            if req.treat_time_var and req.treat_time_var not in keep:
+                keep.append(req.treat_time_var)
         if "moderation" in req.analysis_types and req.moderator_var and req.moderator_var not in keep:
             keep.append(req.moderator_var)
         if "mediation" in req.analysis_types and req.mediator_var and req.mediator_var not in keep:
@@ -322,6 +356,28 @@ async def run_analysis(req: AnalysisRequest):
                     time_var=req.time_var,
                     treatment_var=req.treatment_var,
                     policy_time=req.policy_time,
+                    control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
+                )
+
+            elif analysis_type == "did_event":
+                if not req.dep_var or not req.entity_var or not req.time_var:
+                    raise ValueError("多时点DID需要指定 dep_var / entity_var / time_var")
+                if not req.treatment_var:
+                    raise ValueError("多时点DID需要指定处理组变量 treatment_var")
+                if req.treat_time_var is None and req.policy_time is None:
+                    raise ValueError("多时点DID需要指定政策时点（同质处理填 policy_time，交错处理填 treat_time_var）")
+                results["did_event"] = run_did_event_study(
+                    df,
+                    dep_var=req.dep_var,
+                    entity_var=req.entity_var,
+                    time_var=req.time_var,
+                    treatment_var=req.treatment_var,
+                    policy_time=req.policy_time,
+                    treat_time_var=req.treat_time_var,
+                    window_pre=req.window_pre if req.window_pre is not None else 3,
+                    window_post=req.window_post if req.window_post is not None else 3,
                     control_vars=req.control_vars or [],
                     robust_se=req.robust_se,
                     cluster_var=req.cluster_var,
