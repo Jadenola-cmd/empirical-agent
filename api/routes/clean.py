@@ -1,9 +1,11 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from typing import List
-import json
+import json, logging
 from services.data_loader import load_file
 from services.cleaner import merge_files, clean_data, check_merge_type
 from services.session_store import save_session, load_session, save_cleaned
+
+logger = logging.getLogger("empirical")
 
 router = APIRouter()
 
@@ -33,6 +35,8 @@ async def upload_and_preview(files: List[UploadFile] = File(...)):
             raise HTTPException(status_code=400, detail=f"{f.filename} 解析失败：{str(e)}")
 
     session_id = save_session(dfs)
+    file_info = [f"{p['filename']}({p['rows']}行×{p['cols']}列)" for p in previews]
+    logger.info("[upload] files=%s", " | ".join(file_info))
     return {"files": previews, "session_id": session_id}
 
 

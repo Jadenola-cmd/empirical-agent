@@ -1,8 +1,10 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
-import math
+import math, logging
 import pandas as pd
+
+logger = logging.getLogger("empirical")
 from services.stats import (
     run_descriptive,
     run_correlation,
@@ -458,6 +460,14 @@ async def run_analysis(req: AnalysisRequest):
             interpretation = {"text": f"AI解读失败：{str(e)}"}
 
     do_analyze = _gen_analyze_do(req)
+
+    logger.info(
+        "[analyze] types=%s dep=%s errors=%s ai=%s",
+        ",".join(req.analysis_types),
+        req.dep_var or "-",
+        ",".join(errors.keys()) if errors else "none",
+        req.interpret,
+    )
 
     return _sanitize({
         "success": True,
