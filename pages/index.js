@@ -1456,10 +1456,10 @@ export default function Home() {
                     作用列 <span className="vh">留空 = 全部列；选择后只对选中列执行上述操作，其余列保留原始空值</span>
                   </span>
                   <TagSelector
-                    options={uploadedFiles.flatMap(f => f.columns || [])}
+                    options={uniqueCols}
                     selected={missingCols}
                     onChange={setMissingCols}
-                    dtypes={uploadedFiles[0]?.dtypes}
+                    dtypes={filePreviews[0]?.dtypes}
                   />
                 </div>
               </div>
