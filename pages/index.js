@@ -1670,8 +1670,13 @@ export default function Home() {
                           <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={treatmentVar ? [treatmentVar] : []} onChange={v => setTreatmentVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
                         </div>
                         <div className="var-row">
-                          <span className="vl">处理时间列（交错处理）<span className="vh">可选。各个体政策实施年份，未受处理填 NaN；若不填则使用下方统一政策时点</span></span>
+                          <span className="vl">处理时间列（交错处理）<span className="vh">可选。各个体政策实施年份（整数），控制组留空即可，系统将空值识别为"从未受处理"；若不填则使用下方统一政策时点</span></span>
                           <TagSelector options={cleanedCols.filter(c => c !== depVar && c !== treatmentVar)} selected={treatTimeVar ? [treatTimeVar] : []} onChange={v => setTreatTimeVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                          {treatTimeVar && (
+                            <div className="panel-tip" style={{marginTop:6,color:"#856404",background:"#fff3cd",padding:"6px 10px",borderRadius:4,fontSize:13}}>
+                              ⚠️ 数据清洗时请勿对「{treatTimeVar}」列填充缺失值——空值代表该个体从未受处理，是模型识别控制组的依据。
+                            </div>
+                          )}
                         </div>
                         {!treatTimeVar && (
                           <div className="var-row">
