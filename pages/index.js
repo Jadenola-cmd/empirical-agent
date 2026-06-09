@@ -588,8 +588,8 @@ function EventStudyTable({ data }) {
                 <td style={{ fontFamily: 'monospace', color: '#555' }}>
                   {isBase ? '—' : `(${row.se?.toFixed(4)})`}
                 </td>
-                <td>{fmtP(row.p_value)}</td>
-                <td style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                <td style={{ fontFamily: 'monospace' }}>{fmtP(row.p_value)}</td>
+                <td style={{ fontFamily: 'monospace' }}>
                   {isBase ? '—' : `[${row.ci_low?.toFixed(4)}, ${row.ci_high?.toFixed(4)}]`}
                 </td>
               </tr>
