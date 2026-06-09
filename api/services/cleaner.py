@@ -167,27 +167,46 @@ def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, 
 
     # 4. 缺失值处理
     missing_strategy = config.get("missing", "drop")
+    # missing_cols：用户指定只在哪些列上执行缺失值操作；空列表 = 全部列（保持原有行为）
+    missing_cols_cfg = [c for c in config.get("missing_cols", []) if c in df.columns]
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     missing_before = int(df.isnull().sum().sum())
 
+    def _target_num_cols():
+        """填充操作的目标列：限定列与数值列的交集，未指定则全部数值列。"""
+        if missing_cols_cfg:
+            return [c for c in missing_cols_cfg if c in numeric_cols]
+        return numeric_cols
+
+    cols_note = f"（仅对 {missing_cols_cfg} 列）" if missing_cols_cfg else ""
+
     if missing_strategy == "drop":
-        df = df.dropna()
-        report["steps"].append({"step": "缺失值处理", "detail": "删除含缺失值的行"})
+        df = df.dropna(subset=missing_cols_cfg) if missing_cols_cfg else df.dropna()
+        report["steps"].append({"step": "缺失值处理", "detail": f"删除含缺失值的行{cols_note}"})
     elif missing_strategy == "mean":
-        df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].mean())
-        report["steps"].append({"step": "缺失值处理", "detail": "数值列用均值填充"})
+        t = _target_num_cols()
+        df[t] = df[t].fillna(df[t].mean())
+        report["steps"].append({"step": "缺失值处理", "detail": f"数值列用均值填充{cols_note}"})
     elif missing_strategy == "median":
-        df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].median())
-        report["steps"].append({"step": "缺失值处理", "detail": "数值列用中位数填充"})
+        t = _target_num_cols()
+        df[t] = df[t].fillna(df[t].median())
+        report["steps"].append({"step": "缺失值处理", "detail": f"数值列用中位数填充{cols_note}"})
     elif missing_strategy == "ffill":
-        df = df.ffill()
-        report["steps"].append({"step": "缺失值处理", "detail": "前向填充"})
+        if missing_cols_cfg:
+            df[missing_cols_cfg] = df[missing_cols_cfg].ffill()
+        else:
+            df = df.ffill()
+        report["steps"].append({"step": "缺失值处理", "detail": f"前向填充{cols_note}"})
     elif missing_strategy == "bfill":
-        df = df.bfill()
-        report["steps"].append({"step": "缺失值处理", "detail": "后向填充"})
+        if missing_cols_cfg:
+            df[missing_cols_cfg] = df[missing_cols_cfg].bfill()
+        else:
+            df = df.bfill()
+        report["steps"].append({"step": "缺失值处理", "detail": f"后向填充{cols_note}"})
     elif missing_strategy == "zero":
-        df[numeric_cols] = df[numeric_cols].fillna(0)
-        report["steps"].append({"step": "缺失值处理", "detail": "数值列用0填充"})
+        t = _target_num_cols()
+        df[t] = df[t].fillna(0)
+        report["steps"].append({"step": "缺失值处理", "detail": f"数值列用0填充{cols_note}"})
 
     missing_after = int(df.isnull().sum().sum())
     report["missing_handled"] = missing_before - missing_after

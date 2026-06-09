@@ -1018,6 +1018,7 @@ export default function Home() {
   const [mergeCheck, setMergeCheck] = useState(null);
   const [mergeCheckLoading, setMergeCheckLoading] = useState(false);
   const [missingStrategy, setMissingStrategy] = useState("drop");
+  const [missingCols, setMissingCols] = useState([]);
   const [outlierStrategy, setOutlierStrategy] = useState("none");
   const [outlierThreshold, setOutlierThreshold] = useState(3.0);
   const [dropCols, setDropCols] = useState([]);
@@ -1187,6 +1188,7 @@ export default function Home() {
     form.append("merge_config", JSON.stringify(mergeConfig));
     form.append("clean_config", JSON.stringify({
       missing: missingStrategy,
+      missing_cols: missingCols,
       outlier: outlierStrategy,
       outlier_threshold: outlierThreshold,
       drop_cols: dropCols,
@@ -1448,6 +1450,17 @@ export default function Home() {
                   {[["drop","删除行"],["mean","均值填充"],["median","中位数填充"],["ffill","前向填充"],["zero","填0"]].map(([v, l]) => (
                     <label key={v} className={`radio-btn ${missingStrategy === v ? "sel" : ""}`} onClick={() => setMissingStrategy(v)}>{l}</label>
                   ))}
+                </div>
+                <div style={{marginTop:8}}>
+                  <span className="cfg-label" style={{fontSize:12,color:"#666"}}>
+                    作用列 <span className="vh">留空 = 全部列；选择后只对选中列执行上述操作，其余列保留原始空值</span>
+                  </span>
+                  <TagSelector
+                    options={uploadedFiles.flatMap(f => f.columns || [])}
+                    selected={missingCols}
+                    onChange={setMissingCols}
+                    dtypes={uploadedFiles[0]?.dtypes}
+                  />
                 </div>
               </div>
               <div className="config-item">
