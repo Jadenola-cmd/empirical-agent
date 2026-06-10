@@ -1,7 +1,27 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import Head from "next/head";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// ─── 埋点 ───────────────────────────────────────────
+function getVisitorId() {
+  if (typeof window === "undefined") return null;
+  let id = localStorage.getItem("visitor_id");
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem("visitor_id", id);
+  }
+  return id;
+}
+
+function track(event, props) {
+  if (typeof window === "undefined") return;
+  fetch(`${API_URL}/api/leads/event`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event, visitor_id: getVisitorId(), props: props || null }),
+  }).catch(() => {});
+}
 
 // ─── 导出工具 ───────────────────────────────────────
 function exportXlsx(analyzeResults, cleanedData) {
@@ -1238,7 +1258,16 @@ export default function Home() {
   const [interpret, setInterpret] = useState(false);
   const [customQ, setCustomQ] = useState("");
 
+  const [showTrialModal, setShowTrialModal] = useState(false);
+  const [trialContact, setTrialContact] = useState("");
+  const [trialSubmitting, setTrialSubmitting] = useState(false);
+  const [trialSubmitted, setTrialSubmitted] = useState(false);
+
   const fileRef = useRef();
+
+  useEffect(() => {
+    track("page_view");
+  }, []);
 
   function fmtSize(b) {
     if (!b) return "0 B";
@@ -1255,6 +1284,41 @@ export default function Home() {
     if (!s || s < 1) return "< 1秒";
     if (s < 60) return `${Math.round(s)}秒`;
     return `${Math.floor(s / 60)}分${Math.round(s % 60)}秒`;
+  }
+
+  function logTrialEvent(event) {
+    track(event, { source: "export_trial_modal" });
+  }
+
+  function maybeShowTrialModal() {
+    if (typeof window === "undefined") return;
+    if (localStorage.getItem("trial_modal_shown")) return;
+    localStorage.setItem("trial_modal_shown", "1");
+    setShowTrialModal(true);
+    logTrialEvent("trial_modal_shown");
+  }
+
+  function skipTrialModal() {
+    setShowTrialModal(false);
+    logTrialEvent("trial_modal_skipped");
+  }
+
+  async function submitTrialContact() {
+    const contact = trialContact.trim();
+    if (!contact) return;
+    setTrialSubmitting(true);
+    try {
+      await fetch(`${API_URL}/api/leads/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contact, source: "export_trial_modal" }),
+      });
+    } catch (e) {
+      // 提交失败不影响用户使用
+    }
+    setTrialSubmitting(false);
+    setTrialSubmitted(true);
+    logTrialEvent("trial_modal_submitted");
   }
 
   async function handleUpload(newFiles) {
@@ -1292,6 +1356,7 @@ export default function Home() {
       setFilePreviews(json.files);
       setSessionId(json.session_id || null);
       setMergeCheck(null);
+      track("file_uploaded", { file_count: combined.length });
     } catch (e) { alert("上传失败：" + e.message); }
     setLayer1Loading(false);
     setUploadProgress(null);
@@ -1378,6 +1443,7 @@ export default function Home() {
       setCleanPreview(json.preview);
       setDoClean(json.do_clean || "");
       setCleanedSessionId(json.cleaned_session_id || null);
+      track("clean_completed");
     } catch (e) { alert("清洗失败：" + e.message); }
     setLayer1Loading(false);
     setIsCleaning(false);
@@ -1388,6 +1454,7 @@ export default function Home() {
     if (!analysisTypes.length) return alert("请选择至少一种分析方法");
     setLayer2Loading(true);
     setAnalyzeResults(null);
+    track("analysis_run", { analysis_types: analysisTypes, interpret });
     try {
       const body = {
         analysis_types: analysisTypes,
@@ -1429,6 +1496,7 @@ export default function Home() {
       if (!res.ok) throw new Error(json.detail || "分析失败");
       setAnalyzeResults(json);
       setDoAnalyze(json.do_analyze || "");
+      track("analysis_success", { analysis_types: analysisTypes });
 
       // PCA 综合得分已由后端写回完整数据并生成新的 cleaned_session_id：
       // 同步更新前端缓存的清洗数据/会话，使综合得分可作为新变量在后续回归分析中选用
@@ -1445,7 +1513,10 @@ export default function Home() {
           dtypes: { ...prev.dtypes, [col]: "float64" },
         } : prev);
       }
-    } catch (e) { alert("分析失败：" + e.message); }
+    } catch (e) {
+      alert("分析失败：" + e.message);
+      track("analysis_error", { analysis_types: analysisTypes, error: e.message });
+    }
     setLayer2Loading(false);
   }
 
@@ -1949,7 +2020,10 @@ export default function Home() {
             <div className="section">
               <div className="sh"><span className="sn">03</span><span className="st">AI 解读（可选）</span></div>
               <div className="interp-row">
-                <label className={`radio-btn ${interpret ? "sel" : ""}`} onClick={() => setInterpret(!interpret)}>
+                <label className={`radio-btn ${interpret ? "sel" : ""}`} onClick={() => {
+                  if (!interpret) track("interpret_used");
+                  setInterpret(!interpret);
+                }}>
                   {interpret ? "✓ 开启" : "开启 AI 解读"}
                 </label>
                 {interpret && (
@@ -1971,8 +2045,8 @@ export default function Home() {
                     <span className="rbadge">{analysisTypes.join(" + ").toUpperCase()}</span>
                     <span className="rtitle">实证分析报告</span>
                     <div className="export-btns">
-                      <button className="export-btn" onClick={() => exportXlsx(analyzeResults, cleanedData)}>⬇ xlsx</button>
-                      <button className="export-btn" onClick={() => exportDoFile(doClean, doAnalyze)}>⬇ do 文件</button>
+                      <button className="export-btn" onClick={() => { exportXlsx(analyzeResults, cleanedData); track("export_clicked", { format: "xlsx" }); maybeShowTrialModal(); }}>⬇ xlsx</button>
+                      <button className="export-btn" onClick={() => { exportDoFile(doClean, doAnalyze); track("export_clicked", { format: "do" }); maybeShowTrialModal(); }}>⬇ do 文件</button>
                       <button className="export-btn" onClick={() => {
                         const el = document.getElementById("result-content");
                         if (!el) return;
@@ -1981,6 +2055,8 @@ export default function Home() {
                         a.href = URL.createObjectURL(blob);
                         a.download = `实证分析_${new Date().toISOString().slice(0,10)}.txt`;
                         a.click();
+                        track("export_clicked", { format: "txt" });
+                        maybeShowTrialModal();
                       }}>⬇ txt</button>
                     </div>
                   </div>
@@ -2076,6 +2152,46 @@ export default function Home() {
           </>
         )}
       </div>
+
+      {showTrialModal && (
+        <div className="trial-modal-mask" onClick={() => trialSubmitted ? setShowTrialModal(false) : skipTrialModal()}>
+          <div className="trial-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="trial-modal-close" onClick={() => trialSubmitted ? setShowTrialModal(false) : skipTrialModal()}>✕</button>
+            {!trialSubmitted ? (
+              <>
+                <div className="trial-modal-title">🎁 即将上线高级功能，免费试用名额开放中</div>
+                <div className="trial-modal-desc">
+                  Probit/Logit、PSM 倾向得分匹配、Heckman 两步法、LaTeX 表格导出等高级功能即将上线。
+                  留下邮箱或微信，上线后第一时间发放免费试用激活码。
+                </div>
+                <div className="trial-modal-form">
+                  <input
+                    className="trial-modal-input"
+                    type="text"
+                    placeholder="邮箱或微信号"
+                    value={trialContact}
+                    onChange={(e) => setTrialContact(e.target.value)}
+                  />
+                  <button
+                    className="trial-modal-submit"
+                    disabled={trialSubmitting || !trialContact.trim()}
+                    onClick={submitTrialContact}
+                  >
+                    {trialSubmitting ? "提交中…" : "免费申请试用"}
+                  </button>
+                </div>
+                <div className="trial-modal-skip" onClick={skipTrialModal}>暂不需要，继续使用</div>
+              </>
+            ) : (
+              <>
+                <div className="trial-modal-title">✅ 提交成功</div>
+                <div className="trial-modal-desc">感谢关注，高级功能上线后会第一时间联系你。</div>
+                <button className="trial-modal-submit" onClick={() => setShowTrialModal(false)}>知道了</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       <style jsx global>{`
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -2215,6 +2331,17 @@ export default function Home() {
         .export-btns { display: flex; gap: 8px; flex-wrap: wrap; }
         .export-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; border-radius: 5px; padding: 5px 12px; font-size: 11px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
         .export-btn:hover { background: rgba(255,255,255,0.2); }
+
+        .trial-modal-mask { position: fixed; inset: 0; background: rgba(26,26,26,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; }
+        .trial-modal { position: relative; background: #fdfcf9; border: 1px solid #1a1a1a; border-radius: 8px; max-width: 420px; width: 100%; padding: 32px 28px; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
+        .trial-modal-close { position: absolute; top: 10px; right: 12px; background: none; border: none; font-size: 16px; cursor: pointer; color: #8a8078; }
+        .trial-modal-title { font-family: 'Playfair Display', serif; font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+        .trial-modal-desc { font-size: 13px; line-height: 1.7; color: #5a5248; margin-bottom: 20px; }
+        .trial-modal-form { display: flex; gap: 8px; margin-bottom: 12px; }
+        .trial-modal-input { flex: 1; border: 1px solid #c8c1b4; border-radius: 5px; padding: 8px 10px; font-size: 13px; font-family: 'IBM Plex Sans', sans-serif; }
+        .trial-modal-submit { background: #1a1a1a; color: #fff; border: none; border-radius: 5px; padding: 8px 16px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+        .trial-modal-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+        .trial-modal-skip { text-align: center; font-size: 12px; color: #8a8078; cursor: pointer; text-decoration: underline; }
         .result-body { padding: 32px; }
         .result-footer { padding: 10px 32px; border-top: 1px solid #ddd8cc; background: #f0ece3; font-size: 11px; color: #8a8078; font-style: italic; font-family: 'Playfair Display', serif; }
         .err-box { color: #8a2c2c; font-family: 'IBM Plex Mono', monospace; font-size: 12px; margin-bottom: 8px; }

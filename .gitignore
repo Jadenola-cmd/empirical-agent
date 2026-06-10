@@ -1,0 +1,6 @@
+node_modules/
+.next/
+__pycache__/
+*.pyc
+api/data/leads.jsonl
+api/data/events.jsonl

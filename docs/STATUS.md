@@ -14,7 +14,7 @@
 
 > 2026-06-09：多时点DID事件研究（`did_event`）已合并 `main` 并部署，含整体 ATT 估计与 Excel 导出；事件研究表格样式与回归表格统一（等宽字体、acad-table 样式）；上传接口加 50MB 文件大小限制。
 
-> 2026-06-10：排查并修复生产环境 502 报错——服务器内存仅 1.9GB 且无 swap，处理大体量 .dta 文件合并时后端进程被 OOM Killer 杀死，已加 2GB swap 缓解（详见 `docs/DEBT.md`）；完成服务器安全排查（SSH 配置、FastAPI 文档接口暴露面、nginx default_server、防火墙规则、异常进程排查），均无严重问题，新增 fail2ban 防 SSH 暴力破解。
+> 2026-06-10：排查并修复生产环境 502 报错——服务器内存仅 1.9GB 且无 swap，处理大体量 .dta 文件合并时后端进程被 OOM Killer 杀死，已加 2GB swap 缓解（详见 `docs/DEBT.md`）；完成服务器安全排查（SSH 配置、FastAPI 文档接口暴露面、nginx default_server、防火墙规则、异常进程排查），均无严重问题，新增 fail2ban 防 SSH 暴力破解；新增导出按钮"申请试用"弹窗用于验证付费意愿，收集邮箱/微信至 `/api/leads/submit`，不阻断导出；新增全流程埋点（`/api/leads/event` + 前端 `track()`），覆盖访问、上传、清洗、分析、AI解读、导出全链路，写入 `api/data/events.jsonl`，可计算 UV/PV、漏斗转化率与功能使用排名。
 
 ## 进行中
 
@@ -36,3 +36,6 @@
 - [ ] 分析结果持久化：保存/加载分析配置和结果
 - [ ] 大文件流式处理：超过 50MB 分块上传
 - [ ] 后端流式响应：长时间计算实时返回进度
+
+### 商业化
+- [ ] 高级功能激活码门控：试用申请弹窗已上线（收集邮箱/微信至 `api/data/leads.jsonl`），后续上线 Probit/Logit、PSM、Heckman、LaTeX 导出等高级功能时，按激活码限制访问

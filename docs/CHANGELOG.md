@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-10（续）
+
+**新功能**
+- 新增"申请试用"弹窗：用户点击导出按钮（xlsx/do文件/txt）时弹出，宣传即将上线的高级功能（Probit/Logit、PSM、Heckman、LaTeX 导出等），引导留下邮箱/微信领取试用激活码；首次导出后弹出（`localStorage` 标记，不重复打扰），不阻断导出本身
+- 后端新增 `/api/leads/submit`（`api/routes/leads.py`），将联系方式追加写入 `api/data/leads.jsonl`（已加入 `.gitignore`，不提交用户隐私数据）
+- 新增项目 `.gitignore`（此前不存在），同时补充 `node_modules/`、`.next/`、`__pycache__/` 等常规忽略项
+
+**埋点**
+- `/api/leads/event` 扩展为通用埋点接口（`api/routes/leads.py`），新增 `visitor_id`（前端 `localStorage` 生成的匿名 UUID，用于 UV 去重）、`props`（事件附加信息），统一写入 `api/data/events.jsonl`
+- 前端新增通用 `track(event, props)` 函数，覆盖完整使用漏斗：`page_view`（UV/PV）、`file_uploaded`、`clean_completed`、`analysis_run`/`analysis_success`/`analysis_error`（含 `analysis_types`）、`interpret_used`、`export_clicked`（含格式 xlsx/do/txt），以及此前的 `trial_modal_shown`/`skipped`/`submitted`，可据此计算各步骤转化率与功能使用排名
+
+---
+
 ## 2026-06-10
 
 **修复**
