@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import math, logging
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger("empirical")
@@ -27,11 +28,14 @@ router = APIRouter()
 
 def _sanitize(obj):
     """Recursively replace inf/nan with None so FastAPI can serialize to JSON."""
-    if isinstance(obj, float):
-        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, (float, np.floating)):
+        val = float(obj)
+        return None if (math.isnan(val) or math.isinf(val)) else val
+    if isinstance(obj, np.ndarray):
+        return _sanitize(obj.tolist())
     if isinstance(obj, dict):
         return {k: _sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [_sanitize(v) for v in obj]
     return obj
 

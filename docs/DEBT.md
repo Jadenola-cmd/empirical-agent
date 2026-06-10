@@ -21,6 +21,12 @@
 **中介效应分析仅实现 Baron-Kenny 三步法，显著性阈值 p<0.1**
 `run_mediation` 按 Baron & Kenny (1986) 经典三步法判定中介类型（无/部分/完全），未实现 Bootstrap 或 Sobel 检验。该方法对样本量和效应量较敏感，结果中已提示用户结合其他方法进一步验证。后续如有需要可加 Bootstrap 选项。
 
+**SSH 保持密码登录 + root 可登录（用户主动选择）**
+2026-06-10 安全排查发现服务器 SSH 端口22、`PasswordAuthentication yes`、`PermitRootLogin yes`，理论上有暴力破解风险。用户明确表示需要保留宝塔面板的免密登录方式，因此未禁用密码/root登录。已安装 fail2ban（`/etc/fail2ban/jail.d/sshd.local`，5分钟内失败5次封禁1小时）作为折中防护。FastAPI `/docs`、`/redoc`、内部端口 8000/3000 均未对公网暴露，nginx/防火墙配置无异常。如后续不再需要宝塔登录，可重新评估禁用密码登录。
+
+**腾讯云服务器内存仅 1.9GB，处理大文件易触发 OOM 导致 502**
+2026-06-10 发现：上传/合并多个大体量 .dta 文件（5-6 万行 × 上百列）时，后端 `empirical-api` 内存占用冲到 ~1.5GB 被系统 OOM Killer 杀掉，PM2 自动重启期间前端请求收到 502。已临时加 2GB swap（`/swapfile`，已写入 `/etc/fstab` 持久化）缓解，但只是延迟而非根治——swap 期间响应会变慢。根治需优化 `cleaner.py`/`stats.py` 的内存使用（分块读取、及时释放中间 DataFrame）或升级服务器内存。
+
 ---
 
 ## 前端

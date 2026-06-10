@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-06-10
+
+**修复**
+- 修复 `/api/analyze/run` 偶发 500：`_sanitize`（`api/routes/analyze.py`）原先只处理 Python 原生 `float`，遇到 `np.float32` NaN/Inf 或未转换的 `np.ndarray`（含 NaN）会被 Starlette `JSONResponse`（`allow_nan=False`）拒绝并抛 `ValueError: Out of range float values are not JSON compliant`，导致整次分析请求 500（线上日志统计约影响 7% 的分析请求）。现在 `_sanitize` 同时识别 `np.floating` 子类型并对 `np.ndarray`/`tuple` 递归处理，统一转 `None`/`list`
+
+**运维 / 修复**
+- 修复生产环境 502：服务器内存仅 1.9GB 且无 swap，处理多个大体量 .dta 文件合并时后端 `empirical-api` 被系统 OOM Killer 杀死，PM2 重启期间请求 502；已添加 2GB swap（`/swapfile`，写入 `/etc/fstab` 持久化）作为缓解，根治需优化清洗/分析的内存使用或升级服务器内存
+
+**安全**
+- 完成服务器安全排查：SSH（端口22、密码登录、root登录均开启，用户为保留宝塔面板登录主动选择保留）、FastAPI `/docs`/`/redoc`/`openapi.json` 及内部端口 8000/3000 均未对公网暴露、nginx default_server 配置正常、防火墙策略、进程排查（无挖矿/异常进程）
+- 新增 fail2ban 防护 SSH 暴力破解（5分钟内失败5次封禁1小时）
+
+---
+
 ## 2026-06-09
 
 **新功能**
