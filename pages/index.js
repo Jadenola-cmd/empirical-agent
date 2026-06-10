@@ -4,23 +4,43 @@ import Head from "next/head";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // ─── 埋点 ───────────────────────────────────────────
+function generateUuid() {
+  // crypto.randomUUID() 仅在安全上下文（HTTPS/localhost）可用，HTTP 访问时需降级
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 function getVisitorId() {
   if (typeof window === "undefined") return null;
-  let id = localStorage.getItem("visitor_id");
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem("visitor_id", id);
+  try {
+    let id = localStorage.getItem("visitor_id");
+    if (!id) {
+      id = generateUuid();
+      localStorage.setItem("visitor_id", id);
+    }
+    return id;
+  } catch (e) {
+    return null;
   }
-  return id;
 }
 
 function track(event, props) {
   if (typeof window === "undefined") return;
-  fetch(`${API_URL}/api/leads/event`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ event, visitor_id: getVisitorId(), props: props || null }),
-  }).catch(() => {});
+  try {
+    fetch(`${API_URL}/api/leads/event`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, visitor_id: getVisitorId(), props: props || null }),
+    }).catch(() => {});
+  } catch (e) {
+    // 埋点失败不影响页面正常使用
+  }
 }
 
 // ─── 导出工具 ───────────────────────────────────────
