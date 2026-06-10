@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-06-10（续·三）
+
+**修复**
+- 修复埋点上线后首页 "Application error" 崩溃：`crypto.randomUUID()` 仅在 HTTPS/localhost 等安全上下文可用，生产环境通过 `http://IP` 访问时为 `undefined`，`page_view` 埋点的 `useEffect` 中调用即抛错，触发 React 错误边界导致整页白屏。改为不可用时降级为手写 UUID v4 生成，并对 `localStorage`/`fetch` 包裹 `try/catch`，埋点失败不再影响页面正常使用
+
+---
+
 ## 2026-06-10（续）
 
 **新功能**
