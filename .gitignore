@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 api/data/leads.jsonl
 api/data/events.jsonl
+api/venv/
+pnpm-lock.yaml
+AI_Output/
