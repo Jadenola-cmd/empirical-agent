@@ -218,7 +218,7 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
 
 
 @router.post("/run")
-async def run_analysis(req: AnalysisRequest):
+def run_analysis(req: AnalysisRequest):
     if req.cleaned_session_id:
         try:
             df = load_cleaned(req.cleaned_session_id)
