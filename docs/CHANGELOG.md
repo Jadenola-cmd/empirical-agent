@@ -7,7 +7,7 @@
 ## 2026-06-12
 
 **新增**
-- 新增每日数据日报脚本 `api/scripts/daily_report.py`：统计前一天 UV/PV、核心转化漏斗（访问→上传→清洗→分析→成功→导出，含逐级转化率）、功能使用排名、"申请试用"弹窗转化率、analysis_error 异常详情、试用线索列表，以飞书卡片（schema 2.0，含 table 组件）推送到群自定义机器人；服务器 crontab 每天 8:30 自动执行，依赖环境变量 `FEISHU_WEBHOOK_URL`
+- 新增每日数据日报脚本 `api/scripts/daily_report.py`：统计前一天 UV/PV、核心转化漏斗（访问→上传→清洗→分析→成功→导出，含逐级转化率，表格右对齐）、功能使用排名、"申请试用"弹窗转化率、analysis_error 异常详情、试用线索列表、亮点摘要，以飞书卡片（schema 2.0，含 table 组件）推送到群自定义机器人；服务器 crontab 每天 8:30 自动执行（`api/.env` 新增 `FEISHU_WEBHOOK_URL`，已通过 `dotenv` 加载，本地 `.env.example` 同步更新示例）。飞书为个人版账号，多维表格方案因权限管理/版本发布流程不可用，改用群自定义机器人 Webhook（关键词校验需关闭或不设置）
 
 ---
 
