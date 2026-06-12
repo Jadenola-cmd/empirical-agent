@@ -12,6 +12,10 @@ import urllib.request
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 EVENTS_FILE = os.path.join(BASE_DIR, "events.jsonl")
 LEADS_FILE = os.path.join(BASE_DIR, "leads.jsonl")
