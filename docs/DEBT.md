@@ -24,6 +24,9 @@
 **SSH 保持密码登录 + root 可登录（用户主动选择）**
 2026-06-10 安全排查发现服务器 SSH 端口22、`PasswordAuthentication yes`、`PermitRootLogin yes`，理论上有暴力破解风险。用户明确表示需要保留宝塔面板的免密登录方式，因此未禁用密码/root登录。已安装 fail2ban（`/etc/fail2ban/jail.d/sshd.local`，5分钟内失败5次封禁1小时）作为折中防护。FastAPI `/docs`、`/redoc`、内部端口 8000/3000 均未对公网暴露，nginx/防火墙配置无异常。如后续不再需要宝塔登录，可重新评估禁用密码登录。
 
+**`/api/analyze/run` 单个请求仍可能长时间占满 CPU，无超时/取消机制**
+2026-06-12 发现：一次包含 `pca/did/moderation/heterogeneity` 的分析请求卡死，CPU 占满 2 核近 9 小时（根因未定位，怀疑某个 x 变量是高基数字符串列，`_expand_categoricals` 生成大量哑变量后，PanelOLS `drop_absorbed=True` 的共线性检测在该规模下退化）。已将 `/api/analyze/run` 由 `async def` 改为 `def`（FastAPI 线程池执行），避免单个慢请求阻塞其他用户，但该请求本身仍会一直占用一个线程/CPU 直至完成或进程重启，无超时熔断。后续如再次出现长时间占满 CPU，需先用 `top`/`pm2 logs` 定位卡住的具体 analysis_type 和数据特征；根治需要给重型分析加超时（如 `concurrent.futures` + 超时后返回错误），并在 `_expand_categoricals` 前对高基数 object 列加保护（如基数超过阈值时报错提示用户排除该变量，而非静默 get_dummies）。
+
 **腾讯云服务器内存仅 1.9GB，处理大文件易触发 OOM 导致 502**
 2026-06-10 发现：上传/合并多个大体量 .dta 文件（5-6 万行 × 上百列）时，后端 `empirical-api` 内存占用冲到 ~1.5GB 被系统 OOM Killer 杀掉，PM2 自动重启期间前端请求收到 502。已临时加 2GB swap（`/swapfile`，已写入 `/etc/fstab` 持久化）缓解，但只是延迟而非根治——swap 期间响应会变慢。根治需优化 `cleaner.py`/`stats.py` 的内存使用（分块读取、及时释放中间 DataFrame）或升级服务器内存。
 

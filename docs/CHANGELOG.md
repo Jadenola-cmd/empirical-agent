@@ -6,6 +6,9 @@
 
 ## 2026-06-12
 
+**修复**
+- 修复生产环境严重故障：`/api/analyze/run` 标注为 `async def` 但内部全是同步阻塞计算（pandas/statsmodels/linearmodels），未使用任何 `await`，单个耗时分析请求会独占事件循环线程，导致全站所有接口（健康检查、上传、埋点等）一并 504。当日 09:21 一次包含 `pca/did/moderation/heterogeneity` 的分析请求卡死，CPU 占满双核近 9 小时，期间全站不可用，重启 `empirical-api` 恢复。改为 `def run_analysis`，由 FastAPI 线程池执行，单个慢请求不再拖垒整个服务
+
 **新增**
 - 新增每日数据日报脚本 `api/scripts/daily_report.py`：统计前一天 UV/PV、核心转化漏斗（访问→上传→清洗→分析→成功→导出，含逐级转化率，表格右对齐）、功能使用排名、"申请试用"弹窗转化率、analysis_error 异常详情、试用线索列表、亮点摘要，以飞书卡片（schema 2.0，含 table 组件）推送到群自定义机器人；服务器 crontab 每天 8:30 自动执行（`api/.env` 新增 `FEISHU_WEBHOOK_URL`，已通过 `dotenv` 加载，本地 `.env.example` 同步更新示例）。飞书为个人版账号，多维表格方案因权限管理/版本发布流程不可用，改用群自定义机器人 Webhook（关键词校验需关闭或不设置）
 
