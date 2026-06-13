@@ -1781,7 +1781,8 @@ export default function Home() {
   const uniqueMappedCols = [...new Set(mappedCols)];
   const cleanedCols = cleanedData?.columns || [];
   const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did", "did_robustness", "did_event"].includes(t));
-  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "did", "did_event", "heterogeneity", "iv"].includes(t));
+  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "did", "did_event", "did_robustness", "heterogeneity", "iv", "psm"].includes(t));
+  const needsSE = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "did", "did_event", "did_robustness", "heterogeneity", "iv"].includes(t));
   const needsModeration = analysisTypes.includes("moderation");
   const needsMediation = analysisTypes.includes("mediation");
   const needsDID = analysisTypes.some(t => t === "did" || t === "did_robustness");
@@ -2125,7 +2126,8 @@ export default function Home() {
                   </div>
                 )}
                 {needsReg && (
-                  <>
+                  <div className="config-group">
+                    <div className="config-group-title">通用配置</div>
                     <div className="var-row">
                       <span className="vl">被解释变量 Y</span>
                       <TagSelector options={cleanedCols} selected={depVar ? [depVar] : []} onChange={v => setDepVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
@@ -2142,133 +2144,169 @@ export default function Home() {
                         <TagSelector options={cleanedCols.filter(c => c !== depVar && c !== treatmentVar)} selected={indepVars} onChange={setIndepVars} dtypes={cleanedData?.dtypes} />
                       </div>
                     )}
-                    {needsModeration && (
-                      <div className="var-row">
-                        <span className="vl">调节变量 M <span className="vh">将与 X 中心化后构造交互项</span></span>
-                        <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={moderatorVar ? [moderatorVar] : []} onChange={v => setModeratorVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
-                      </div>
-                    )}
-                    {needsMediation && (
-                      <div className="var-row">
-                        <span className="vl">中介变量 M <span className="vh">Baron-Kenny 三步法：依次估计 Y~X、M~X、Y~X+M</span></span>
-                        <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={mediatorVar ? [mediatorVar] : []} onChange={v => setMediatorVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
-                      </div>
-                    )}
-                    {needsHeterogeneity && (
-                      <>
-                        <div className="var-row">
-                          <span className="vl">分组变量 Group <span className="vh">按其取值将样本拆分为多组，分别估计同一回归并列对比</span></span>
-                          <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={groupVar ? [groupVar] : []} onChange={v => setGroupVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
-                        </div>
-                        <div className="var-row">
-                          <span className="vl">分组方式 <span className="vh">分组阈值基于全样本计算，保证各组可比</span></span>
-                          <div className="radio-group">
-                            {[["median", "中位数二分"], ["quantile", "三分位三分"], ["category", "按类别取值（≤6组）"]].map(([v, l]) => (
-                              <label key={v} className={`radio-btn ${groupMethod === v ? "sel" : ""}`} onClick={() => setGroupMethod(v)}>{l}</label>
-                            ))}
-                          </div>
-                        </div>
-                      </>
-                    )}
-                    {needsIV && (
-                      <>
-                        <div className="var-row">
-                          <span className="vl">内生解释变量 Endogenous <span className="vh">与误差项相关、需要工具变量纠正的解释变量</span></span>
-                          <TagSelector options={cleanedCols.filter(c => c !== depVar && !instrumentVars.includes(c))} selected={endogVars} onChange={setEndogVars} dtypes={cleanedData?.dtypes} />
-                        </div>
-                        <div className="var-row">
-                          <span className="vl">工具变量 Instruments <span className="vh">与内生变量相关、但与误差项无关；数量须 ≥ 内生变量数</span></span>
-                          <TagSelector options={cleanedCols.filter(c => c !== depVar && !endogVars.includes(c))} selected={instrumentVars} onChange={setInstrumentVars} dtypes={cleanedData?.dtypes} />
-                        </div>
-                      </>
-                    )}
-                    {needsPSM && (
-                      <>
-                        <div className="var-row">
-                          <span className="vl">处理组变量 Treatment <span className="vh">取值0/1，标识个体是否接受处理</span></span>
-                          <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={treatmentVar ? [treatmentVar] : []} onChange={v => {
-                            const newVal = v[0] || "";
-                            setTreatmentVar(newVal);
-                            if (newVal) {
-                              setIndepVars(prev => prev.filter(c => c !== newVal));
-                              setControlVars(prev => prev.filter(c => c !== newVal));
-                            }
-                          }} single dtypes={cleanedData?.dtypes} />
-                        </div>
-                        <div className="var-row">
-                          <span className="vl">近邻数 <span className="vh">每个处理组个体匹配的对照组个体数量，默认1（最近邻）</span></span>
-                          <input className="threshold-input" type="number" min="1" max="10" value={psmNeighbors}
-                            onChange={e => setPsmNeighbors(Math.max(1, parseInt(e.target.value) || 1))} />
-                        </div>
-                        <div className="var-row">
-                          <span className="vl">Caliper <span className="vh">倾向得分匹配的最大允许距离，留空表示不限制</span></span>
-                          <input className="threshold-input" type="number" step="0.01" min="0" value={psmCaliper}
-                            onChange={e => setPsmCaliper(e.target.value === "" ? "" : parseFloat(e.target.value))}
-                            placeholder="如 0.05（可留空）" />
-                        </div>
-                      </>
-                    )}
-                    {needsDID && (
-                      <>
-                        <div className="var-row">
-                          <span className="vl">处理组变量 Treatment <span className="vh">取值0/1，标识个体是否属于处理组</span></span>
-                          <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={treatmentVar ? [treatmentVar] : []} onChange={v => setTreatmentVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
-                        </div>
-                        <div className="var-row">
-                          <span className="vl">政策时点 Policy Time <span className="vh">政策实施的年份，≥该值视为政策后</span></span>
-                          <input className="threshold-input" type="number" value={policyTime}
-                            onChange={e => setPolicyTime(e.target.value === "" ? "" : parseFloat(e.target.value))}
-                            placeholder="如 2015" />
-                        </div>
-                      </>
-                    )}
-                    {needsDIDEvent && (
-                      <>
-                        <div className="var-row">
-                          <span className="vl">处理组变量 Treatment <span className="vh">取值0/1，标识个体是否属于处理组</span></span>
-                          <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={treatmentVar ? [treatmentVar] : []} onChange={v => setTreatmentVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
-                        </div>
-                        <div className="var-row">
-                          <span className="vl">处理时间列（交错处理）<span className="vh">可选。各个体政策实施年份（整数），控制组留空即可，系统将空值识别为"从未受处理"；若不填则使用下方统一政策时点</span></span>
-                          <TagSelector options={cleanedCols.filter(c => c !== depVar && c !== treatmentVar)} selected={treatTimeVar ? [treatTimeVar] : []} onChange={v => setTreatTimeVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
-                          {treatTimeVar && (
-                            <div className="panel-tip" style={{marginTop:6,color:"#856404",background:"#fff3cd",padding:"6px 10px",borderRadius:4,fontSize:13}}>
-                              ⚠️ 数据清洗时请勿对「{treatTimeVar}」列填充缺失值——空值代表该个体从未受处理，是模型识别控制组的依据。
-                            </div>
-                          )}
-                        </div>
-                        {!treatTimeVar && (
-                          <div className="var-row">
-                            <span className="vl">政策时点 Policy Time <span className="vh">同质处理：所有处理组统一的政策实施年份</span></span>
-                            <input className="threshold-input" type="number" value={policyTime}
-                              onChange={e => setPolicyTime(e.target.value === "" ? "" : parseFloat(e.target.value))}
-                              placeholder="如 2015" />
-                          </div>
-                        )}
-                        <div className="var-row">
-                          <span className="vl">事件窗口 <span className="vh">政策前后各展示几期，默认前3后3</span></span>
-                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            <span style={{ fontSize: 13, color: "#666" }}>前</span>
-                            <input className="threshold-input" type="number" min="1" max="10" value={windowPre}
-                              onChange={e => setWindowPre(Math.max(1, parseInt(e.target.value) || 3))}
-                              style={{ width: 60 }} />
-                            <span style={{ fontSize: 13, color: "#666" }}>期　后</span>
-                            <input className="threshold-input" type="number" min="1" max="10" value={windowPost}
-                              onChange={e => setWindowPost(Math.max(1, parseInt(e.target.value) || 3))}
-                              style={{ width: 60 }} />
-                            <span style={{ fontSize: 13, color: "#666" }}>期</span>
-                          </div>
-                        </div>
-                      </>
-                    )}
                     <div className="var-row">
                       <span className="vl">控制变量 <span className="vh">可不选</span></span>
                       <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && c !== moderatorVar && c !== treatmentVar && c !== mediatorVar && c !== groupVar && !endogVars.includes(c) && !instrumentVars.includes(c))} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
                     </div>
-                  </>
+                    {needsSE && (
+                      <div className="var-row">
+                        <span className="vl">标准误</span>
+                        <div className="radio-group">
+                          {[["conventional","常规SE"],["robust","稳健SE(HC1)"],["cluster","聚类SE"]].map(([v, l]) => (
+                            <label key={v}
+                              className={`radio-btn ${(v === "conventional" && !robustSE && !clusterVar) || (v === "robust" && robustSE && !clusterVar) || (v === "cluster" && clusterVar) ? "sel" : ""}`}
+                              onClick={() => {
+                                if (v === "conventional") { setRobustSE(false); setClusterVar(""); }
+                                else if (v === "robust") { setRobustSE(true); setClusterVar(""); }
+                                else if (v === "cluster") { setRobustSE(false); }
+                              }}>{l}</label>
+                          ))}
+                        </div>
+                        {!robustSE && (
+                          <div style={{ marginTop: 8 }}>
+                            <span className="vl">聚类变量</span>
+                            <TagSelector options={cleanedCols} selected={clusterVar ? [clusterVar] : []} onChange={v => setClusterVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {(needsPSM || needsDID || needsDIDEvent) && (
+                  <div className="config-group">
+                    <div className="config-group-title">处理组变量 Treatment</div>
+                    <div className="var-row">
+                      <span className="vl">
+                        取值0/1，标识个体是否属于处理组/接受处理
+                        <span className="vh">用于：{[needsPSM && "PSM", needsDID && "DID/DID稳健性检验", needsDIDEvent && "DID事件研究"].filter(Boolean).join("、")}</span>
+                      </span>
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={treatmentVar ? [treatmentVar] : []} onChange={v => {
+                        const newVal = v[0] || "";
+                        setTreatmentVar(newVal);
+                        if (needsPSM && newVal) {
+                          setIndepVars(prev => prev.filter(c => c !== newVal));
+                          setControlVars(prev => prev.filter(c => c !== newVal));
+                        }
+                      }} single dtypes={cleanedData?.dtypes} />
+                    </div>
+                  </div>
+                )}
+                {needsModeration && (
+                  <div className="config-group">
+                    <div className="config-group-title">调节效应分析 配置</div>
+                    <div className="var-row">
+                      <span className="vl">调节变量 M <span className="vh">将与 X 中心化后构造交互项</span></span>
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={moderatorVar ? [moderatorVar] : []} onChange={v => setModeratorVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                    </div>
+                  </div>
+                )}
+                {needsMediation && (
+                  <div className="config-group">
+                    <div className="config-group-title">中介效应分析 配置</div>
+                    <div className="var-row">
+                      <span className="vl">中介变量 M <span className="vh">Baron-Kenny 三步法：依次估计 Y~X、M~X、Y~X+M</span></span>
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={mediatorVar ? [mediatorVar] : []} onChange={v => setMediatorVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                    </div>
+                  </div>
+                )}
+                {needsHeterogeneity && (
+                  <div className="config-group">
+                    <div className="config-group-title">异质性分析 配置</div>
+                    <div className="var-row">
+                      <span className="vl">分组变量 Group <span className="vh">按其取值将样本拆分为多组，分别估计同一回归并列对比</span></span>
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c))} selected={groupVar ? [groupVar] : []} onChange={v => setGroupVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                    </div>
+                    <div className="var-row">
+                      <span className="vl">分组方式 <span className="vh">分组阈值基于全样本计算，保证各组可比</span></span>
+                      <div className="radio-group">
+                        {[["median", "中位数二分"], ["quantile", "三分位三分"], ["category", "按类别取值（≤6组）"]].map(([v, l]) => (
+                          <label key={v} className={`radio-btn ${groupMethod === v ? "sel" : ""}`} onClick={() => setGroupMethod(v)}>{l}</label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {needsIV && (
+                  <div className="config-group">
+                    <div className="config-group-title">工具变量法 配置</div>
+                    <div className="var-row">
+                      <span className="vl">内生解释变量 Endogenous <span className="vh">与误差项相关、需要工具变量纠正的解释变量</span></span>
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !instrumentVars.includes(c))} selected={endogVars} onChange={setEndogVars} dtypes={cleanedData?.dtypes} />
+                    </div>
+                    <div className="var-row">
+                      <span className="vl">工具变量 Instruments <span className="vh">与内生变量相关、但与误差项无关；数量须 ≥ 内生变量数</span></span>
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !endogVars.includes(c))} selected={instrumentVars} onChange={setInstrumentVars} dtypes={cleanedData?.dtypes} />
+                    </div>
+                  </div>
+                )}
+                {needsPSM && (
+                  <div className="config-group">
+                    <div className="config-group-title">PSM 配置</div>
+                    <div className="var-row">
+                      <span className="vl">近邻数 <span className="vh">每个处理组个体匹配的对照组个体数量，默认1（最近邻）</span></span>
+                      <input className="threshold-input" type="number" min="1" max="10" value={psmNeighbors}
+                        onChange={e => setPsmNeighbors(Math.max(1, parseInt(e.target.value) || 1))} />
+                    </div>
+                    <div className="var-row">
+                      <span className="vl">Caliper <span className="vh">倾向得分匹配的最大允许距离，留空表示不限制</span></span>
+                      <input className="threshold-input" type="number" step="0.01" min="0" value={psmCaliper}
+                        onChange={e => setPsmCaliper(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                        placeholder="如 0.05（可留空）" />
+                    </div>
+                  </div>
+                )}
+                {needsDID && (
+                  <div className="config-group">
+                    <div className="config-group-title">
+                      {[analysisTypes.includes("did") && "DID", analysisTypes.includes("did_robustness") && "DID稳健性检验"].filter(Boolean).join(" / ")} 配置
+                    </div>
+                    <div className="var-row">
+                      <span className="vl">政策时点 Policy Time <span className="vh">政策实施的年份，≥该值视为政策后</span></span>
+                      <input className="threshold-input" type="number" value={policyTime}
+                        onChange={e => setPolicyTime(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                        placeholder="如 2015" />
+                    </div>
+                  </div>
+                )}
+                {needsDIDEvent && (
+                  <div className="config-group">
+                    <div className="config-group-title">DID事件研究 配置</div>
+                    <div className="var-row">
+                      <span className="vl">处理时间列（交错处理）<span className="vh">可选。各个体政策实施年份（整数），控制组留空即可，系统将空值识别为"从未受处理"；若不填则使用下方/上方统一政策时点</span></span>
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && c !== treatmentVar)} selected={treatTimeVar ? [treatTimeVar] : []} onChange={v => setTreatTimeVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                      {treatTimeVar && (
+                        <div className="panel-tip" style={{marginTop:6,color:"#856404",background:"#fff3cd",padding:"6px 10px",borderRadius:4,fontSize:13}}>
+                          ⚠️ 数据清洗时请勿对「{treatTimeVar}」列填充缺失值——空值代表该个体从未受处理，是模型识别控制组的依据。
+                        </div>
+                      )}
+                    </div>
+                    {!treatTimeVar && !needsDID && (
+                      <div className="var-row">
+                        <span className="vl">政策时点 Policy Time <span className="vh">同质处理：所有处理组统一的政策实施年份</span></span>
+                        <input className="threshold-input" type="number" value={policyTime}
+                          onChange={e => setPolicyTime(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                          placeholder="如 2015" />
+                      </div>
+                    )}
+                    <div className="var-row">
+                      <span className="vl">事件窗口 <span className="vh">政策前后各展示几期，默认前3后3</span></span>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <span style={{ fontSize: 13, color: "#666" }}>前</span>
+                        <input className="threshold-input" type="number" min="1" max="10" value={windowPre}
+                          onChange={e => setWindowPre(Math.max(1, parseInt(e.target.value) || 3))}
+                          style={{ width: 60 }} />
+                        <span style={{ fontSize: 13, color: "#666" }}>期　后</span>
+                        <input className="threshold-input" type="number" min="1" max="10" value={windowPost}
+                          onChange={e => setWindowPost(Math.max(1, parseInt(e.target.value) || 3))}
+                          style={{ width: 60 }} />
+                        <span style={{ fontSize: 13, color: "#666" }}>期</span>
+                      </div>
+                    </div>
+                  </div>
                 )}
                 {needsPanel && (
-                  <>
+                  <div className="config-group">
+                    <div className="config-group-title">面板数据设置</div>
                     <div className="var-row">
                       <span className="vl">个体变量 <span className="vh">企业/机构唯一ID，如 stkcd、firm_id（选文本或整数列）</span></span>
                       <TagSelector options={cleanedCols} selected={entityVar ? [entityVar] : []} onChange={v => setEntityVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
@@ -2293,28 +2331,6 @@ export default function Home() {
                         <label className={`radio-btn ${timeEffects ? "sel" : ""}`} onClick={() => setTimeEffects(v => !v)}>
                           {timeEffects ? "✓ 开启（双向FE）" : "关闭（仅个体FE）"}
                         </label>
-                      </div>
-                    )}
-                  </>
-                )}
-                {needsReg && (
-                  <div className="var-row">
-                    <span className="vl">标准误</span>
-                    <div className="radio-group">
-                      {[["conventional","常规SE"],["robust","稳健SE(HC1)"],["cluster","聚类SE"]].map(([v, l]) => (
-                        <label key={v}
-                          className={`radio-btn ${(v === "conventional" && !robustSE && !clusterVar) || (v === "robust" && robustSE && !clusterVar) || (v === "cluster" && clusterVar) ? "sel" : ""}`}
-                          onClick={() => {
-                            if (v === "conventional") { setRobustSE(false); setClusterVar(""); }
-                            else if (v === "robust") { setRobustSE(true); setClusterVar(""); }
-                            else if (v === "cluster") { setRobustSE(false); }
-                          }}>{l}</label>
-                      ))}
-                    </div>
-                    {!robustSE && (
-                      <div style={{ marginTop: 8 }}>
-                        <span className="vl">聚类变量</span>
-                        <TagSelector options={cleanedCols} selected={clusterVar ? [clusterVar] : []} onChange={v => setClusterVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
                       </div>
                     )}
                   </div>
@@ -2692,6 +2708,10 @@ export default function Home() {
         .var-row { margin-bottom: 14px; }
         .vl { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #8a8078; display: block; margin-bottom: 8px; font-family: 'IBM Plex Mono', monospace; text-transform: uppercase; }
         .vh { font-size: 10px; color: #bbb; font-weight: 400; letter-spacing: 0; text-transform: none; margin-left: 6px; }
+        .config-group { border: 1px solid #ece7dc; border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; background: #fffef9; }
+        .config-group:last-child { margin-bottom: 0; }
+        .config-group-title { font-size: 12px; font-weight: 700; color: #2c4a8a; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #ece7dc; font-family: 'IBM Plex Mono', monospace; letter-spacing: 1px; }
+        .config-group .var-row:last-child { margin-bottom: 0; }
         .interp-row { margin-bottom: 14px; }
         .custom-q { width: 100%; margin-top: 10px; border: 1px solid #ddd8cc; border-radius: 6px; padding: 10px 14px; font-size: 13px; font-family: 'IBM Plex Sans', sans-serif; background: #fffef9; outline: none; resize: none; min-height: 64px; }
         .result-area { margin-top: 8px; }
