@@ -2139,7 +2139,7 @@ export default function Home() {
                           {!needsModeration && needsMediation && <span className="vh">中介效应分析取第一个选中的变量作为 X</span>}
                           {needsPSM && <span className="vh">用于估计倾向得分的协变量（与下方控制变量共同构成 Logit 的解释变量）</span>}
                         </span>
-                        <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={indepVars} onChange={setIndepVars} dtypes={cleanedData?.dtypes} />
+                        <TagSelector options={cleanedCols.filter(c => c !== depVar && c !== treatmentVar)} selected={indepVars} onChange={setIndepVars} dtypes={cleanedData?.dtypes} />
                       </div>
                     )}
                     {needsModeration && (
@@ -2186,7 +2186,14 @@ export default function Home() {
                       <>
                         <div className="var-row">
                           <span className="vl">处理组变量 Treatment <span className="vh">取值0/1，标识个体是否接受处理</span></span>
-                          <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && !controlVars.includes(c))} selected={treatmentVar ? [treatmentVar] : []} onChange={v => setTreatmentVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={treatmentVar ? [treatmentVar] : []} onChange={v => {
+                            const newVal = v[0] || "";
+                            setTreatmentVar(newVal);
+                            if (newVal) {
+                              setIndepVars(prev => prev.filter(c => c !== newVal));
+                              setControlVars(prev => prev.filter(c => c !== newVal));
+                            }
+                          }} single dtypes={cleanedData?.dtypes} />
                         </div>
                         <div className="var-row">
                           <span className="vl">近邻数 <span className="vh">每个处理组个体匹配的对照组个体数量，默认1（最近邻）</span></span>
