@@ -249,16 +249,31 @@ def _run_binary_model(
     X = sm.add_constant(sub[all_x_vars_final], has_constant="add")
     model = sm.Probit(y, X) if model_type == "probit" else sm.Logit(y, X)
 
+    fit_kwargs: Dict[str, Any] = {"disp": 0}
     if cluster_var:
         groups = sub[cluster_var]
-        res = model.fit(disp=0, cov_type="cluster", cov_kwds={"groups": groups})
+        fit_kwargs.update(cov_type="cluster", cov_kwds={"groups": groups})
         se_type = f"clustered({cluster_var})"
     elif robust_se:
-        res = model.fit(disp=0, cov_type="HC1")
+        fit_kwargs.update(cov_type="HC1")
         se_type = "robust(HC1)"
     else:
-        res = model.fit(disp=0)
         se_type = "conventional"
+
+    try:
+        res = model.fit(**fit_kwargs)
+    except np.linalg.LinAlgError:
+        # 默认 Newton 法在存在完全分离/完全共线（如某解释变量与被解释变量完全对应）时
+        # Hessian 矩阵奇异，改用 BFGS（不依赖 Hessian 求逆）重试
+        try:
+            res = model.fit(method="bfgs", maxiter=200, **fit_kwargs)
+        except np.linalg.LinAlgError:
+            res = None
+        if res is None or not np.all(np.isfinite(res.bse.to_numpy())):
+            raise ValueError(
+                f"{model_type.capitalize()} 估计失败（矩阵奇异），通常是解释变量之间存在完全共线，"
+                "或某个解释变量与被解释变量完全对应（完全分离），请检查变量选择后重试"
+            )
 
     coefs = []
     for name in res.params.index:
