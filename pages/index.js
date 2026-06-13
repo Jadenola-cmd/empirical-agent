@@ -1458,11 +1458,6 @@ export default function Home() {
   const [interpret, setInterpret] = useState(false);
   const [customQ, setCustomQ] = useState("");
 
-  const [showTrialModal, setShowTrialModal] = useState(false);
-  const [trialContact, setTrialContact] = useState("");
-  const [trialSubmitting, setTrialSubmitting] = useState(false);
-  const [trialSubmitted, setTrialSubmitted] = useState(false);
-
   const [showUnlockModal, setShowUnlockModal] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
   const [unlockCodeInput, setUnlockCodeInput] = useState("");
@@ -1498,41 +1493,6 @@ export default function Home() {
     return `${Math.floor(s / 60)}分${Math.round(s % 60)}秒`;
   }
 
-  function logTrialEvent(event) {
-    track(event, { source: "export_trial_modal" });
-  }
-
-  function maybeShowTrialModal() {
-    if (typeof window === "undefined") return;
-    if (localStorage.getItem("trial_modal_shown")) return;
-    localStorage.setItem("trial_modal_shown", "1");
-    setShowTrialModal(true);
-    logTrialEvent("trial_modal_shown");
-  }
-
-  function skipTrialModal() {
-    setShowTrialModal(false);
-    logTrialEvent("trial_modal_skipped");
-  }
-
-  async function submitTrialContact() {
-    const contact = trialContact.trim();
-    if (!contact) return;
-    setTrialSubmitting(true);
-    try {
-      await fetch(`${API_URL}/api/leads/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contact, source: "export_trial_modal" }),
-      });
-    } catch (e) {
-      // 提交失败不影响用户使用
-    }
-    setTrialSubmitting(false);
-    setTrialSubmitted(true);
-    logTrialEvent("trial_modal_submitted");
-  }
-
   function openUnlockModal(source = "locked_analysis_card") {
     setUnlockError("");
     setUnlockIssuedCode("");
@@ -1548,7 +1508,6 @@ export default function Home() {
     }
     doExport();
     track("export_clicked", { format });
-    maybeShowTrialModal();
   }
 
   function unlockWithCode(code) {
@@ -2536,46 +2495,6 @@ export default function Home() {
           </>
         )}
       </div>
-
-      {showTrialModal && (
-        <div className="trial-modal-mask" onClick={() => trialSubmitted ? setShowTrialModal(false) : skipTrialModal()}>
-          <div className="trial-modal" onClick={(e) => e.stopPropagation()}>
-            <button className="trial-modal-close" onClick={() => trialSubmitted ? setShowTrialModal(false) : skipTrialModal()}>✕</button>
-            {!trialSubmitted ? (
-              <>
-                <div className="trial-modal-title">🎁 即将上线高级功能，免费试用名额开放中</div>
-                <div className="trial-modal-desc">
-                  Probit/Logit、PSM 倾向得分匹配、Heckman 两步法、LaTeX 表格导出等高级功能即将上线。
-                  留下邮箱或微信，上线后第一时间发放免费试用激活码。
-                </div>
-                <div className="trial-modal-form">
-                  <input
-                    className="trial-modal-input"
-                    type="text"
-                    placeholder="邮箱或微信号"
-                    value={trialContact}
-                    onChange={(e) => setTrialContact(e.target.value)}
-                  />
-                  <button
-                    className="trial-modal-submit"
-                    disabled={trialSubmitting || !trialContact.trim()}
-                    onClick={submitTrialContact}
-                  >
-                    {trialSubmitting ? "提交中…" : "免费申请试用"}
-                  </button>
-                </div>
-                <div className="trial-modal-skip" onClick={skipTrialModal}>暂不需要，继续使用</div>
-              </>
-            ) : (
-              <>
-                <div className="trial-modal-title">✅ 提交成功</div>
-                <div className="trial-modal-desc">感谢关注，高级功能上线后会第一时间联系你。</div>
-                <button className="trial-modal-submit" onClick={() => setShowTrialModal(false)}>知道了</button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
 
       {showUnlockModal && (
         <div className="trial-modal-mask" onClick={() => setShowUnlockModal(false)}>
