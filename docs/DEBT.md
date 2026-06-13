@@ -29,6 +29,12 @@
 
 2026-06-13 已为 `/api/analyze/run` 增加 90 秒超时熔断（`routes/analyze.py`，`concurrent.futures.ThreadPoolExecutor` + `future.result(timeout=...)`），超时后立即向用户返回 504 提示精简分析类型/数据量，不再无限转圈。但这只是**响应层面**的缓解：`ThreadPoolExecutor` 的线程无法被强制中断，超时后台计算仍会继续占用 CPU 直至自然结束或进程重启；执行器 `max_workers=2`，若短时间内多次触发该场景，2 个 worker 都被占满后新请求会排队等待。根治仍需：① `_expand_categoricals` 前对高基数 object 列加基数阈值保护（超过阈值报错提示用户排除该变量，而非静默 `get_dummies`）；② 真正可中断的执行方式（如 `ProcessPoolExecutor` + `terminate()`）。
 
+**PSM 的 ATT 标准误为简单标准误，非 Abadie-Imbens 修正方差**
+`run_psm`（`stats.py`）的 ATT 标准误按匹配后差值的简单标准误计算（`diffs.std(ddof=1) / sqrt(n)`），未实现 Abadie & Imbens (2006) 针对近邻匹配的修正方差估计，存在一定的有效自由度低估问题。已在结果 `notes` 中向用户说明对应 Stata `psmatch2` 的近似估计。后续如有需要可补充 AI 修正方差。
+
+**DID 稳健性检验的安慰剂检验固定 `n_placebo=100`，未根据数据规模动态调整**
+`run_did_robustness`（`stats.py`）每次安慰剂检验循环 100 次 `run_panel`，在 90 秒超时熔断内对中小型面板数据（千行级）通常无压力，但若叠加大数据集（万行级以上）或与其他重型分析类型同时勾选，可能逼近超时阈值。暂未做动态调整或单独的子超时控制，上线后需观察该分析类型在大数据场景下的实际耗时。
+
 **腾讯云服务器内存仅 1.9GB，处理大文件易触发 OOM 导致 502**
 2026-06-10 发现：上传/合并多个大体量 .dta 文件（5-6 万行 × 上百列）时，后端 `empirical-api` 内存占用冲到 ~1.5GB 被系统 OOM Killer 杀掉，PM2 自动重启期间前端请求收到 502。已临时加 2GB swap（`/swapfile`，已写入 `/etc/fstab` 持久化）缓解，但只是延迟而非根治——swap 期间响应会变慢。根治需优化 `cleaner.py`/`stats.py` 的内存使用（分块读取、及时释放中间 DataFrame）或升级服务器内存。
 

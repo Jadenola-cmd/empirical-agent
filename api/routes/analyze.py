@@ -16,15 +16,24 @@ from services.stats import (
     run_moderation,
     run_mediation,
     run_did,
+    run_did_robustness,
     run_did_event_study,
     run_heterogeneity,
     run_iv,
     run_pca,
+    run_probit,
+    run_logit,
+    run_psm,
 )
 from services.interpreter import interpret_results
 from services.session_store import load_cleaned, save_cleaned
+from routes.activation import is_valid_code
 
 router = APIRouter()
+
+# 需激活码解锁的高级分析类型（2026-06-13 方案：单一共享码统一解锁，详见 docs/STATUS.md）
+# 范围：本次新增的高级功能（PSM/DID稳健性检验/Probit/Logit）；已上线的免费功能不纳入锁定
+RESTRICTED_ANALYSIS_TYPES: set = {"psm", "did_robustness", "probit", "logit"}
 
 # 单次分析请求超时熔断：避免某个分析组合在大数据上长时间占满 CPU 拖垮整机
 # （2026-06-12 曾出现 panel_fe/pca/did/moderation/heterogeneity 组合卡死近9小时）
@@ -74,6 +83,9 @@ class AnalysisRequest(BaseModel):
     window_post: Optional[int] = 3
     interpret: Optional[bool] = False
     custom_question: Optional[str] = None
+    activation_code: Optional[str] = None
+    psm_neighbors: Optional[int] = 1
+    psm_caliper: Optional[float] = None
 
 
 def _gen_analyze_do(req: AnalysisRequest) -> str:
@@ -96,6 +108,26 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
         else:
             se_opt = ""
         lines.append(f"reg {req.dep_var} {' '.join(all_x)}{se_opt}")
+
+    for _bin_type in ("probit", "logit"):
+        if _bin_type in req.analysis_types and req.dep_var:
+            all_x = (req.indep_vars or []) + (req.control_vars or [])
+            if req.cluster_var:
+                se_opt = f", vce(cluster {req.cluster_var})"
+            elif req.robust_se:
+                se_opt = ", vce(robust)"
+            else:
+                se_opt = ""
+            lines.append(f"{_bin_type} {req.dep_var} {' '.join(all_x)}{se_opt}")
+            lines.append("margins, dydx(*)  // 平均边际效应（AME）")
+
+    if "psm" in req.analysis_types and req.dep_var and req.treatment_var:
+        covariates = (req.indep_vars or []) + (req.control_vars or [])
+        k = req.psm_neighbors or 1
+        caliper_opt = f" caliper({req.psm_caliper})" if req.psm_caliper is not None else ""
+        lines.append("* 倾向得分匹配 PSM（需 ssc install psmatch2）")
+        lines.append(f"psmatch2 {req.treatment_var} {' '.join(covariates)}, outcome({req.dep_var}) neighbor({k}){caliper_opt} logit")
+        lines.append("pstest " + " ".join(covariates) + "  // 平衡性检验（标准化均值差）")
 
     if "panel_fe" in req.analysis_types and req.dep_var:
         all_x = (req.indep_vars or []) + (req.control_vars or [])
@@ -158,6 +190,20 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
         lines.append(f"xtreg {req.dep_var} {' '.join(all_x)} i.{req.time_var}, fe{se_opt}")
         lines.append("* 平行趋势检验（仅用政策前样本）：")
         lines.append(f"reg {req.dep_var} {req.treatment_var} c.{req.time_var}##c.{req.treatment_var} if {req.time_var} < {pt}")
+
+    if "did_robustness" in req.analysis_types and req.dep_var and req.entity_var and req.time_var and req.treatment_var:
+        pt = req.policy_time if req.policy_time is not None else "{政策年份}"
+        all_x = ["did"] + (req.control_vars or [])
+        se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
+        lines.append("* DID稳健性检验：安慰剂检验（随机分配处理组，重复N次后比较真实系数与随机分布）：")
+        lines.append(f"* 以下为单次示例，可循环执行并保存 _b[placebo_did] 后绘制分布图")
+        lines.append(f"gen post = ({req.time_var} >= {pt})")
+        lines.append(f"bysort {req.entity_var}: gen _placebo_treat = ({req.entity_var} <= ({req.entity_var}的随机子集))  // 示例，需自定义随机分组逻辑")
+        lines.append(f"gen placebo_did = _placebo_treat * post")
+        lines.append(f"xtset {req.entity_var} {req.time_var}")
+        lines.append(f"xtreg {req.dep_var} placebo_did {' '.join(req.control_vars or [])} i.{req.time_var}, fe{se_opt}")
+        lines.append("* 剔除政策当期重新估计：")
+        lines.append(f"xtreg {req.dep_var} {' '.join(all_x)} i.{req.time_var} if {req.time_var} != {pt}, fe{se_opt}")
 
     if "mediation" in req.analysis_types and req.dep_var and req.indep_vars and req.mediator_var:
         x, m = req.indep_vars[0], req.mediator_var
@@ -225,6 +271,13 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
 
 @router.post("/run")
 def run_analysis(req: AnalysisRequest):
+    restricted_requested = [t for t in req.analysis_types if t in RESTRICTED_ANALYSIS_TYPES]
+    if restricted_requested and not is_valid_code(req.activation_code):
+        raise HTTPException(
+            status_code=403,
+            detail=f"以下分析为高级功能，需输入激活码解锁：{restricted_requested}",
+        )
+
     if req.cleaned_session_id:
         try:
             df = load_cleaned(req.cleaned_session_id)
@@ -243,12 +296,12 @@ def run_analysis(req: AnalysisRequest):
             raise HTTPException(status_code=400, detail=f"变量不存在：{missing_cols}")
         # Bug3 Fix: 面板分析必须保留 entity_var / time_var，即使用户没有在 variables 里选它们
         keep = list(req.variables)
-        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did", "did_event", "heterogeneity")):
+        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did", "did_robustness", "did_event", "heterogeneity")):
             if req.entity_var and req.entity_var not in keep:
                 keep.append(req.entity_var)
             if req.time_var and req.time_var not in keep:
                 keep.append(req.time_var)
-        if "did" in req.analysis_types and req.treatment_var and req.treatment_var not in keep:
+        if any(t in req.analysis_types for t in ("did", "did_robustness", "psm")) and req.treatment_var and req.treatment_var not in keep:
             keep.append(req.treatment_var)
         if "did_event" in req.analysis_types:
             if req.treatment_var and req.treatment_var not in keep:
@@ -416,6 +469,42 @@ def _run_all_analyses(req: "AnalysisRequest", df: pd.DataFrame, df_full: pd.Data
                     cluster_var=req.cluster_var,
                 )
 
+            elif analysis_type == "psm":
+                if not req.dep_var:
+                    raise ValueError("PSM 需要指定被解释变量 dep_var")
+                if not req.treatment_var:
+                    raise ValueError("PSM 需要指定处理组变量 treatment_var")
+                covariates = (req.indep_vars or []) + (req.control_vars or [])
+                if not covariates:
+                    raise ValueError("PSM 需要指定用于估计倾向得分的协变量（解释变量/控制变量）")
+                results["psm"] = run_psm(
+                    df,
+                    dep_var=req.dep_var,
+                    treatment_var=req.treatment_var,
+                    covariates=covariates,
+                    n_neighbors=req.psm_neighbors or 1,
+                    caliper=req.psm_caliper,
+                )
+
+            elif analysis_type == "did_robustness":
+                if not req.dep_var or not req.entity_var or not req.time_var:
+                    raise ValueError("DID稳健性检验需要指定 dep_var / entity_var / time_var")
+                if not req.treatment_var:
+                    raise ValueError("DID稳健性检验需要指定处理组变量 treatment_var")
+                if req.policy_time is None:
+                    raise ValueError("DID稳健性检验需要指定政策时点 policy_time")
+                results["did_robustness"] = run_did_robustness(
+                    df,
+                    dep_var=req.dep_var,
+                    entity_var=req.entity_var,
+                    time_var=req.time_var,
+                    treatment_var=req.treatment_var,
+                    policy_time=req.policy_time,
+                    control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
+                )
+
             elif analysis_type == "did_event":
                 if not req.dep_var or not req.entity_var or not req.time_var:
                     raise ValueError("多时点DID需要指定 dep_var / entity_var / time_var")
@@ -482,6 +571,22 @@ def _run_all_analyses(req: "AnalysisRequest", df: pd.DataFrame, df_full: pd.Data
                     pca_result["score_column"] = score_col
                     pca_result["new_cleaned_session_id"] = new_sid
                 results["pca"] = pca_result
+
+            elif analysis_type in ("probit", "logit"):
+                if not req.dep_var:
+                    raise ValueError(f"{analysis_type.capitalize()} 需要指定被解释变量 dep_var")
+                all_x = (req.indep_vars or []) + (req.control_vars or [])
+                if not all_x:
+                    raise ValueError(f"{analysis_type.capitalize()} 需要指定解释变量 indep_vars")
+                run_fn = run_probit if analysis_type == "probit" else run_logit
+                results[analysis_type] = run_fn(
+                    df,
+                    dep_var=req.dep_var,
+                    indep_vars=req.indep_vars or [],
+                    control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
+                )
 
             elif analysis_type in ("panel_fe", "panel_re"):
                 if not req.dep_var or not req.entity_var or not req.time_var:

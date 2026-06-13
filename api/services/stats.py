@@ -207,6 +207,144 @@ def run_ols(
     }
 
 
+def _run_binary_model(
+    df: pd.DataFrame,
+    dep_var: str,
+    indep_vars: List[str],
+    control_vars: List[str],
+    robust_se: bool,
+    cluster_var: Optional[str],
+    model_type: str,
+) -> Dict:
+    """Probit/Logit 二元选择模型，最大似然估计（MLE）。
+    要求被解释变量取值仅为 0/1，对应 Stata probit / logit。
+    附带平均边际效应（AME），便于解释系数大小（Probit/Logit 系数本身不直接对应概率变化）。
+    """
+    all_x_vars = indep_vars + control_vars
+    cols_needed = list(dict.fromkeys([dep_var] + all_x_vars))
+    if cluster_var and cluster_var not in cols_needed:
+        cols_needed.append(cluster_var)
+
+    sub = df[cols_needed].copy()
+
+    for col in [dep_var] + all_x_vars:
+        if col in sub.columns and not pd.api.types.is_object_dtype(sub[col]):
+            sub[col] = pd.to_numeric(sub[col], errors="coerce")
+
+    sub, all_x_vars_final, dummy_info = _expand_categoricals(sub, all_x_vars)
+
+    dropna_cols = [dep_var] + all_x_vars_final
+    if cluster_var:
+        dropna_cols.append(cluster_var)
+    sub = sub.dropna(subset=list(dict.fromkeys(dropna_cols)))
+
+    if len(sub) == 0:
+        raise ValueError("转换为数值后数据为空，请检查变量是否为数值类型")
+
+    y = sub[dep_var]
+    unique_y = sorted(y.unique().tolist())
+    if not set(unique_y).issubset({0.0, 1.0}):
+        raise ValueError(f"{model_type.capitalize()} 要求被解释变量为二元变量（取值仅0/1），当前观测到的取值：{unique_y}")
+
+    X = sm.add_constant(sub[all_x_vars_final], has_constant="add")
+    model = sm.Probit(y, X) if model_type == "probit" else sm.Logit(y, X)
+
+    if cluster_var:
+        groups = sub[cluster_var]
+        res = model.fit(disp=0, cov_type="cluster", cov_kwds={"groups": groups})
+        se_type = f"clustered({cluster_var})"
+    elif robust_se:
+        res = model.fit(disp=0, cov_type="HC1")
+        se_type = "robust(HC1)"
+    else:
+        res = model.fit(disp=0)
+        se_type = "conventional"
+
+    coefs = []
+    for name in res.params.index:
+        p = float(res.pvalues[name])
+        coefs.append({
+            "variable":   name if name != "const" else "_cons",
+            "coef":       round(float(res.params[name]), 6),
+            "std_error":  round(float(res.bse[name]), 6),
+            "t_stat":     round(float(res.tvalues[name]), 4),
+            "p_value":    round(p, 6),
+            "sig":        sig_stars(p),
+            "ci_lower":   round(float(res.conf_int().loc[name, 0]), 6),
+            "ci_upper":   round(float(res.conf_int().loc[name, 1]), 6),
+        })
+
+    margeff_list = []
+    try:
+        mfx = res.get_margeff(at="overall", method="dydx")
+        mfx_df = mfx.summary_frame()
+        for name in mfx_df.index:
+            row = mfx_df.loc[name]
+            p = float(row["Pr(>|z|)"])
+            margeff_list.append({
+                "variable":  name,
+                "dydx":      round(float(row["dy/dx"]), 6),
+                "std_error": round(float(row["Std. Err."]), 6),
+                "z_stat":    round(float(row["z"]), 4),
+                "p_value":   round(p, 6),
+                "sig":       sig_stars(p),
+            })
+    except Exception:
+        margeff_list = []
+
+    dummy_vars_flat = [col for cols in dummy_info.values() for col in cols]
+    cat_note = (
+        f"；{list(dummy_info.keys())} 已自动展开为虚拟变量（drop_first=True，对齐 Stata xi:）"
+        if dummy_info else ""
+    )
+
+    return {
+        "type":             model_type,
+        "dep_var":          dep_var,
+        "indep_vars":       indep_vars,
+        "control_vars":     control_vars,
+        "n":                int(res.nobs),
+        "log_likelihood":   round(float(res.llf), 4),
+        "log_likelihood_null": round(float(res.llnull), 4),
+        "pseudo_r2":        round(float(res.prsquared), 6),
+        "lr_chi2":          round(float(res.llr), 4),
+        "lr_pvalue":        round(float(res.llr_pvalue), 6),
+        "se_type":          se_type,
+        "coefficients":     coefs,
+        "margeff":          margeff_list,
+        "categorical_vars": list(dummy_info.keys()),
+        "dummy_vars":       dummy_vars_flat,
+        "time_effects":     False,
+        "notes": (
+            f"括号内为z值，{se_type}标准误，***p<0.01, **p<0.05, *p<0.1{cat_note}；"
+            f"Pseudo R²（McFadden）= {round(float(res.prsquared), 4)}；"
+            f"系数为对潜变量/log-odds的影响，平均边际效应（AME）见下表，对应 Stata {model_type} 后 margins, dydx(*)"
+        ),
+    }
+
+
+def run_probit(
+    df: pd.DataFrame,
+    dep_var: str,
+    indep_vars: List[str],
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    return _run_binary_model(df, dep_var, indep_vars, control_vars, robust_se, cluster_var, "probit")
+
+
+def run_logit(
+    df: pd.DataFrame,
+    dep_var: str,
+    indep_vars: List[str],
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    return _run_binary_model(df, dep_var, indep_vars, control_vars, robust_se, cluster_var, "logit")
+
+
 def run_moderation(
     df: pd.DataFrame,
     dep_var: str,
@@ -422,6 +560,128 @@ def run_did(
     result["parallel_trends"] = parallel_trends
     result["notes"] += "；DID 通过个体+时间双向固定效应吸收处理组、时期主效应，仅估计交互项 _did（政策净效应）"
     return result
+
+
+def run_did_robustness(
+    df: pd.DataFrame,
+    dep_var: str,
+    entity_var: str,
+    time_var: str,
+    treatment_var: str,
+    policy_time: float,
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+    n_placebo: int = 100,
+) -> Dict:
+    """DID 稳健性检验包：安慰剂检验（随机分配处理组）+ 剔除政策当期重新估计。
+
+    安慰剂检验：保持处理组个体数量不变，随机重新分配"处理组"身份并重复估计 _did 系数，
+    若真实系数的绝对值明显大于绝大多数随机分配下的系数（即伪 p 值较小），
+    说明真实结果不太可能是偶然产生，增强因果识别可信度。对应 Stata 中常见的
+    permutation/randomization inference 做法。
+
+    剔除政策当期：剔除 time_var == policy_time 的观测后重新估计，
+    用于排除政策当期数据异常（如政策宣布与实施同期混杂）对结果的影响。
+    """
+    sub = df.copy()
+    time_numeric = pd.to_numeric(sub[time_var], errors="coerce")
+    treat = pd.to_numeric(sub[treatment_var], errors="coerce")
+    sub["_post"] = (time_numeric >= policy_time).astype(float)
+    sub["_did"] = treat * sub["_post"]
+
+    baseline = run_panel(
+        sub, dep_var=dep_var, indep_vars=["_did"], control_vars=control_vars,
+        entity_var=entity_var, time_var=time_var, model_type="fe",
+        robust_se=robust_se, cluster_var=cluster_var, time_effects=True,
+    )
+    base_row = next(c for c in baseline["coefficients"] if c["variable"] == "_did")
+    base_coef = base_row["coef"]
+
+    # 1. 安慰剂检验：随机重新分配处理组身份（保持处理组个体数量不变），重复估计 _did 系数
+    ent_treat = sub.groupby(entity_var)[treatment_var].apply(lambda s: pd.to_numeric(s, errors="coerce").max())
+    all_entities = ent_treat.index.tolist()
+    n_treated = int((ent_treat > 0).sum())
+
+    placebo_coefs = []
+    if 0 < n_treated < len(all_entities):
+        rng = np.random.default_rng(42)
+        for _ in range(n_placebo):
+            placebo_treated_entities = set(rng.choice(all_entities, size=n_treated, replace=False))
+            placebo_treat_map = {e: (1.0 if e in placebo_treated_entities else 0.0) for e in all_entities}
+            sub["_placebo_did"] = sub[entity_var].map(placebo_treat_map) * sub["_post"]
+            try:
+                placebo_result = run_panel(
+                    sub, dep_var=dep_var, indep_vars=["_placebo_did"], control_vars=control_vars,
+                    entity_var=entity_var, time_var=time_var, model_type="fe",
+                    robust_se=robust_se, cluster_var=cluster_var, time_effects=True,
+                )
+                row = next(c for c in placebo_result["coefficients"] if c["variable"] == "_placebo_did")
+                placebo_coefs.append(row["coef"])
+            except Exception:
+                continue
+        sub = sub.drop(columns=["_placebo_did"], errors="ignore")
+
+    if placebo_coefs:
+        placebo_arr = np.array(placebo_coefs)
+        placebo_p = float(np.mean(np.abs(placebo_arr) >= abs(base_coef)))
+        placebo_info = {
+            "n_runs":     len(placebo_coefs),
+            "coefs":      [round(float(c), 6) for c in placebo_coefs],
+            "mean":       round(float(placebo_arr.mean()), 6),
+            "std":        round(float(placebo_arr.std(ddof=1)), 6) if len(placebo_coefs) > 1 else 0.0,
+            "p_value":    round(placebo_p, 6),
+            "conclusion": (
+                f"真实 _did 系数（{round(base_coef, 4)}）的绝对值大于 {round((1 - placebo_p) * 100, 1)}% 的随机分配结果"
+                + ("，安慰剂检验通过，结果不太可能是偶然产生" if placebo_p < 0.1 else
+                   "，但占比不足90%，安慰剂检验未通过，结果可能存在偶然性，需谨慎解释")
+            ),
+        }
+    else:
+        placebo_info = {
+            "n_runs": 0,
+            "coefs": [],
+            "mean": None, "std": None, "p_value": None,
+            "conclusion": "处理组个体数量不满足随机重分配条件（需同时存在处理组与对照组个体），未运行安慰剂检验",
+        }
+
+    # 2. 剔除政策当期重新估计
+    exclude_period_info = None
+    sub_excl = sub[time_numeric != policy_time].copy()
+    try:
+        if sub_excl[entity_var].nunique() >= 2 and sub_excl[time_var].nunique() >= 2:
+            excl_result = run_panel(
+                sub_excl, dep_var=dep_var, indep_vars=["_did"], control_vars=control_vars,
+                entity_var=entity_var, time_var=time_var, model_type="fe",
+                robust_se=robust_se, cluster_var=cluster_var, time_effects=True,
+            )
+            excl_row = next(c for c in excl_result["coefficients"] if c["variable"] == "_did")
+            exclude_period_info = {
+                "coef":      excl_row["coef"],
+                "std_error": excl_row["std_error"],
+                "t_stat":    excl_row["t_stat"],
+                "p_value":   excl_row["p_value"],
+                "sig":       excl_row["sig"],
+                "n":         excl_result["n"],
+            }
+    except Exception:
+        exclude_period_info = None
+
+    return {
+        "type":                 "did_robustness",
+        "dep_var":              dep_var,
+        "treatment_var":        treatment_var,
+        "policy_time":          policy_time,
+        "baseline_coef":        base_coef,
+        "baseline_p_value":     base_row["p_value"],
+        "placebo":              placebo_info,
+        "exclude_policy_period": exclude_period_info,
+        "notes": (
+            "安慰剂检验：保持处理组个体数量不变，随机重新分配处理组身份并重复估计，"
+            "伪p值=随机系数绝对值≥真实系数绝对值的比例，越小说明结果越不可能偶然产生；"
+            "剔除政策当期：去除 policy_time 当期观测后重新估计 _did，用于排除政策宣布/实施同期混杂的影响。"
+        ),
+    }
 
 
 def run_did_event_study(
@@ -1135,5 +1395,144 @@ def run_pca(
             "若需手动调整保留数量，累计方差贡献率达到 80% 左右是另一种常见的参考经验标准，可结合碎石图自行判断；"
             "KMO 与 Bartlett 球形检验用于判断变量是否适合做主成分分析（KMO 越接近 1、Bartlett 检验显著 p<0.05 越适合）；"
             "综合得分按各保留主成分的方差贡献率加权汇总，可作为构造综合指数变量导出后续使用"
+        ),
+    }
+
+
+def run_psm(
+    df: pd.DataFrame,
+    dep_var: str,
+    treatment_var: str,
+    covariates: List[str],
+    n_neighbors: int = 1,
+    caliper: Optional[float] = None,
+) -> Dict:
+    """倾向得分匹配（PSM）：Logit 估计倾向得分 + 近邻匹配（有放回）+ 平衡性检验。
+
+    流程：
+    1. 用 covariates 通过 Logit 估计处理组倾向得分 P(treatment=1 | X)
+    2. 对每个处理组个体，在对照组中按倾向得分距离寻找最近的 n_neighbors 个个体（有放回），
+       caliper 指定最大允许距离，超过则不匹配
+    3. ATT = 处理组个体 Y 与其匹配对照组 Y 均值之差的平均值，
+       显著性通过对这些差值做单样本 t 检验（H0: 均值=0）得到，
+       对应 Stata `psmatch2` 风格的简单匹配方差（非 Abadie-Imbens 修正方差，结果中已注明）
+    4. 平衡性检验：比较匹配前后处理组与对照组在各 covariate 上的标准化均值差（standardized bias）
+    """
+    cols_needed = list(dict.fromkeys([dep_var, treatment_var] + covariates))
+    sub = df[cols_needed].copy()
+    for col in cols_needed:
+        if not pd.api.types.is_object_dtype(sub[col]):
+            sub[col] = pd.to_numeric(sub[col], errors="coerce")
+
+    sub, covariates_final, dummy_info = _expand_categoricals(sub, covariates)
+    dropna_cols = list(dict.fromkeys([dep_var, treatment_var] + covariates_final))
+    sub = sub.dropna(subset=dropna_cols).reset_index(drop=True)
+
+    if len(sub) == 0:
+        raise ValueError("转换为数值后数据为空，请检查变量是否为数值类型")
+
+    treat = sub[treatment_var]
+    unique_treat = sorted(treat.unique().tolist())
+    if not set(unique_treat).issubset({0.0, 1.0}):
+        raise ValueError(f"PSM 要求处理组变量为二元变量（取值仅0/1），当前观测到的取值：{unique_treat}")
+
+    n_treated_total = int((treat == 1).sum())
+    n_control_total = int((treat == 0).sum())
+    if n_treated_total == 0 or n_control_total == 0:
+        raise ValueError("处理组和对照组必须均非空（treatment_var 需同时包含0和1）")
+
+    # 1. 估计倾向得分
+    X = sm.add_constant(sub[covariates_final], has_constant="add")
+    logit_res = sm.Logit(treat, X).fit(disp=0)
+    pscore = logit_res.predict(X)
+    sub["_pscore"] = pscore
+
+    treated = sub[treat == 1].copy()
+    control = sub[treat == 0].copy()
+    control_pscores = control["_pscore"].to_numpy()
+    control_y = control[dep_var].to_numpy()
+
+    # 2 & 3. 近邻匹配（有放回）+ ATT
+    diffs = []
+    n_unmatched = 0
+    for _, row in treated.iterrows():
+        dists = np.abs(control_pscores - row["_pscore"])
+        if caliper is not None:
+            within = dists <= caliper
+            if not within.any():
+                n_unmatched += 1
+                continue
+            order = np.argsort(dists)
+            order = [i for i in order if within[i]][:n_neighbors]
+        else:
+            order = np.argsort(dists)[:n_neighbors]
+        matched_y = control_y[order].mean()
+        diffs.append(row[dep_var] - matched_y)
+
+    n_matched = len(diffs)
+    if n_matched == 0:
+        raise ValueError("没有处理组个体匹配到对照组（caliper 可能设置过小），请放宽 caliper 或检查数据")
+
+    diffs_arr = np.array(diffs)
+    att = float(diffs_arr.mean())
+    if n_matched > 1:
+        t_stat, p_value = stats.ttest_1samp(diffs_arr, 0.0)
+        se = float(diffs_arr.std(ddof=1) / np.sqrt(n_matched))
+        t_stat, p_value = float(t_stat), float(p_value)
+    else:
+        se, t_stat, p_value = float("nan"), float("nan"), float("nan")
+
+    # 4. 平衡性检验：标准化均值差（处理组 vs 全部对照组，匹配前）
+    balance = []
+    for cv in covariates_final:
+        t_mean, c_mean = treated[cv].mean(), control[cv].mean()
+        pooled_sd = np.sqrt((treated[cv].var(ddof=1) + control[cv].var(ddof=1)) / 2)
+        std_bias = (t_mean - c_mean) / pooled_sd * 100 if pooled_sd > 0 else 0.0
+        balance.append({
+            "variable":      cv,
+            "treated_mean":  round(float(t_mean), 4),
+            "control_mean":  round(float(c_mean), 4),
+            "std_bias_pct":  round(float(std_bias), 2),
+        })
+
+    # 共同支撑域
+    t_min, t_max = treated["_pscore"].min(), treated["_pscore"].max()
+    c_min, c_max = control["_pscore"].min(), control["_pscore"].max()
+    common_min, common_max = max(t_min, c_min), min(t_max, c_max)
+    n_outside_support = int(((treated["_pscore"] < common_min) | (treated["_pscore"] > common_max)).sum())
+
+    dummy_vars_flat = [col for cols in dummy_info.values() for col in cols]
+    cat_note = (
+        f"；{list(dummy_info.keys())} 已自动展开为虚拟变量（drop_first=True，对齐 Stata xi:）"
+        if dummy_info else ""
+    )
+
+    return {
+        "type":             "psm",
+        "dep_var":          dep_var,
+        "treatment_var":    treatment_var,
+        "covariates":       covariates,
+        "categorical_vars": list(dummy_info.keys()),
+        "dummy_vars":       dummy_vars_flat,
+        "n_neighbors":      n_neighbors,
+        "caliper":          caliper,
+        "n_treated":        n_treated_total,
+        "n_control":        n_control_total,
+        "n_matched":        n_matched,
+        "n_unmatched":      n_unmatched,
+        "n_outside_support": n_outside_support,
+        "att":              round(att, 6),
+        "se":               round(se, 6) if se == se else None,
+        "t_stat":           round(t_stat, 4) if t_stat == t_stat else None,
+        "p_value":          round(p_value, 6) if p_value == p_value else None,
+        "sig":              sig_stars(p_value) if p_value == p_value else "",
+        "balance":          balance,
+        "pscore_pseudo_r2": round(float(logit_res.prsquared), 6),
+        "notes": (
+            f"倾向得分由 Logit({treatment_var} ~ {', '.join(covariates_final)}) 估计；"
+            f"近邻匹配（k={n_neighbors}，有放回{'，caliper=' + str(caliper) if caliper is not None else ''}）"
+            f"{cat_note}；ATT标准误为匹配后差值的简单标准误（非 Abadie-Imbens 修正方差），"
+            "对应 Stata psmatch2 的近似估计；标准化均值差（std_bias_pct）绝对值通常以 <10% 作为平衡性可接受的经验标准；"
+            f"{n_unmatched} 个处理组个体因超出 caliper 未匹配，{n_outside_support} 个处理组个体倾向得分超出共同支撑域"
         ),
     }

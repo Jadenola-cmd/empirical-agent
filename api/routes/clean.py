@@ -220,6 +220,24 @@ def _gen_clean_do(merge_cfg: dict, clean_cfg: dict, dfs: dict) -> str:
         lines.append(f"gen ln_{col} = log({col})")
         lines.append(f"* 注：若 {col} 含0或负值，改用: gen ln_{col} = log(1 + {col})")
 
+    # 滞后自变量
+    lag_vars = clean_cfg.get("lag_vars", [])
+    lag_periods = int(clean_cfg.get("lag_periods", 1) or 1)
+    lag_entity_var = clean_cfg.get("lag_entity_var")
+    lag_time_var = clean_cfg.get("lag_time_var")
+    if lag_vars and lag_periods > 0:
+        if lag_entity_var and lag_time_var:
+            lines.append(f"* 滞后自变量（按个体+时间排序后 shift）")
+            lines.append(f"xtset {lag_entity_var} {lag_time_var}")
+            for col in lag_vars:
+                for lag in range(1, lag_periods + 1):
+                    lines.append(f"gen {col}_lag{lag} = L{lag}.{col}")
+        else:
+            lines.append("* 滞后自变量（未指定个体/时间变量，面板数据建议先 xtset）")
+            for col in lag_vars:
+                for lag in range(1, lag_periods + 1):
+                    lines.append(f"gen {col}_lag{lag} = {col}[_n-{lag}]")
+
     # 缩尾处理
     winsorize_vars = clean_cfg.get("winsorize_vars", [])
     if winsorize_vars:

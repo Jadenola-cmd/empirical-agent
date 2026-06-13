@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-13（续）
+
+**新增**
+- 数据清洗新增"滞后变量"批量生成操作：按 `entity_var` 分组对指定变量做 `shift(n)`，对齐 Stata `xtset` + `gen x_lag = L.x`，面板回归常用
+- 新增 Probit/Logit 二元被解释变量回归：基于 `statsmodels` MLE 估计，结果区展示系数表（含 Pseudo R²、对数似然、LR χ²）与边际效应表（AME），Excel 导出补充对应 sheet，Stata do 片段同步生成
+- 新增 DID 稳健性检验包（`did_robustness`）：安慰剂检验（随机重新分配处理组身份，重复100次，给出伪p值）+ 剔除政策当期重新估计，结果区与 Excel 导出均补充展示
+- 新增 PSM 倾向得分匹配（`psm`）：Logit 估计倾向得分 + 近邻匹配（有放回，支持自定义近邻数与 caliper）+ 平衡性检验（标准化均值差）+ 共同支撑域统计，ATT 标准误为匹配后差值的简单标准误（非 Abadie-Imbens 修正方差），结果区与 Excel 导出均补充展示
+- 新增激活码门控系统：单一共享激活码（`ACTIVATION_CODE` 环境变量，默认 `EMPIRICAL2026`），新增 `/api/activation/verify` 校验接口；`/api/leads/submit` 提交联系方式后自动返回激活码（无需建发信服务）；前端用 `localStorage` 记录解锁状态
+- 锁定范围（2026-06-13 与用户讨论确定）：本次新增的 Probit/Logit/PSM/DID稳健性检验 四项分析类型需激活码解锁（后端 `RESTRICTED_ANALYSIS_TYPES` + 前端 `LOCKED_ANALYSIS_TYPES` 双重限制，避免仅前端限制被绕过）；已上线的 did/did_event/iv/moderation/mediation/heterogeneity 等免费功能不受影响。同时，全部导出功能（xlsx/do/txt）改为需解锁后才可使用，未解锁时点击导出按钮弹出解锁提示
+
+---
+
 ## 2026-06-13
 
 **修复**

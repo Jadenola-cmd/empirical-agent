@@ -5,6 +5,7 @@ import json
 import os
 import logging
 from datetime import datetime, timezone
+from routes.activation import get_shared_code
 
 logger = logging.getLogger("empirical")
 
@@ -38,7 +39,7 @@ async def submit_lead(req: LeadRequest):
     with open(LEADS_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
     logger.info("[lead] contact=%s source=%s", contact, req.source or "-")
-    return {"success": True}
+    return {"success": True, "activation_code": get_shared_code()}
 
 
 @router.post("/event")

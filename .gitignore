@@ -5,5 +5,6 @@ __pycache__/
 api/data/leads.jsonl
 api/data/events.jsonl
 api/venv/
+api/_sessions/
 pnpm-lock.yaml
 AI_Output/

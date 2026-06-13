@@ -265,6 +265,38 @@ def clean_data(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[pd.DataFrame, 
             "detail": f"{winsorized}（{winsorize_lower}%-{winsorize_upper}%分位截断）"
         })
 
+    # 7. 滞后自变量（按个体变量分组、按时间变量排序后 shift，面板数据常用）
+    lag_vars = config.get("lag_vars", [])
+    lag_periods = int(config.get("lag_periods", 1) or 1)
+    lag_entity_var = config.get("lag_entity_var")
+    lag_time_var = config.get("lag_time_var")
+    lag_created = []
+    if lag_vars and lag_periods > 0:
+        has_panel_keys = (
+            lag_entity_var and lag_entity_var in df.columns
+            and lag_time_var and lag_time_var in df.columns
+        )
+        if has_panel_keys:
+            df = df.sort_values([lag_entity_var, lag_time_var]).reset_index(drop=True)
+        for col in lag_vars:
+            if col not in df.columns:
+                continue
+            series = pd.to_numeric(df[col], errors="coerce")
+            for lag in range(1, lag_periods + 1):
+                new_col = f"{col}_lag{lag}"
+                if has_panel_keys:
+                    df[new_col] = series.groupby(df[lag_entity_var]).shift(lag)
+                else:
+                    df[new_col] = series.shift(lag)
+                lag_created.append(new_col)
+    if lag_created:
+        note = (
+            f"按 {lag_entity_var} 分组、{lag_time_var} 排序后生成"
+            if has_panel_keys else
+            "未指定个体/时间变量，按当前行序生成（面板数据建议指定个体与时间变量以保证正确性）"
+        )
+        report["steps"].append({"step": "滞后自变量", "detail": f"{lag_created}；{note}"})
+
     df = df.reset_index(drop=True)
     report["rows_after"] = len(df)
     report["cols_after"] = len(df.columns)

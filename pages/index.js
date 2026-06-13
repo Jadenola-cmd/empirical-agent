@@ -3,6 +3,14 @@ import Head from "next/head";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+function sigStars(p) {
+  if (p == null) return "";
+  if (p < 0.01) return "***";
+  if (p < 0.05) return "**";
+  if (p < 0.1) return "*";
+  return "";
+}
+
 // ─── 埋点 ───────────────────────────────────────────
 function generateUuid() {
   // crypto.randomUUID() 仅在安全上下文（HTTPS/localhost）可用，HTTP 访问时需降级
@@ -107,9 +115,14 @@ function exportXlsx(analyzeResults, cleanedData) {
       (reg.categorical_vars || []).forEach(cv => rows.push([`${cv} 虚拟化`, "Yes"]));
       rows.push(["时间固定效应", reg.time_effects ? "Yes" : "No"]);
       rows.push(["N", reg.n]);
+      const isBinary = reg.type === "probit" || reg.type === "logit";
       if (isPanel) {
         rows.push(["R² (within)", reg.r2_within?.toFixed(3)]);
         rows.push(["R² (overall)", reg.r2_overall?.toFixed(3)]);
+      } else if (isBinary) {
+        rows.push(["Pseudo R² (McFadden)", reg.pseudo_r2?.toFixed(3)]);
+        rows.push(["Log-likelihood", reg.log_likelihood?.toFixed(3)]);
+        rows.push(["LR χ²", reg.lr_chi2?.toFixed(3)]);
       } else {
         rows.push(["R²", reg.r2?.toFixed(3)]);
         rows.push(["Adj. R²", reg.r2_adj?.toFixed(3)]);
@@ -119,6 +132,14 @@ function exportXlsx(analyzeResults, cleanedData) {
         rows.push([]);
         rows.push([`Hausman检验: χ²=${reg.hausman.chi2}, p=${reg.hausman.p_value}`]);
         rows.push([reg.hausman.conclusion]);
+      }
+      if (reg.margeff?.length) {
+        rows.push([]);
+        rows.push(["平均边际效应（AME）"]);
+        rows.push(["变量", "dy/dx", "Std.Err.", "z", "p"]);
+        reg.margeff.forEach(m => {
+          rows.push([m.variable, `${m.dydx?.toFixed(4)}${m.sig}`, m.std_error?.toFixed(4), m.z_stat?.toFixed(2), m.p_value?.toFixed(3)]);
+        });
       }
       rows.push([]);
       rows.push([reg.notes || "括号内为t值，***p<0.01, **p<0.05, *p<0.1"]);
@@ -292,6 +313,61 @@ function exportXlsx(analyzeResults, cleanedData) {
     if (r.ols) { const ws = buildRegSheet(r.ols, "OLS 回归结果"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "OLS"); }
     if (r.panel_fe) { const ws = buildRegSheet(r.panel_fe, "固定效应回归（xtreg, fe）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "固定效应"); }
     if (r.panel_re) { const ws = buildRegSheet(r.panel_re, "随机效应回归（xtreg, re）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "随机效应"); }
+    if (r.probit) { const ws = buildRegSheet(r.probit, "Probit 回归结果"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "Probit"); }
+    if (r.logit) { const ws = buildRegSheet(r.logit, "Logit 回归结果"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "Logit"); }
+
+    if (r.psm) {
+      const ps = r.psm;
+      const rows = [["倾向得分匹配（PSM）结果"]];
+      rows.push([]);
+      rows.push(["ATT", `${ps.att?.toFixed(4)}${ps.sig}`]);
+      rows.push(["SE", ps.se != null ? ps.se.toFixed(4) : "—"]);
+      rows.push(["t", ps.t_stat ?? "—"]);
+      rows.push(["p", ps.p_value ?? "—"]);
+      rows.push(["处理组 N", ps.n_treated]);
+      rows.push(["对照组 N", ps.n_control]);
+      rows.push(["匹配成功数", ps.n_matched]);
+      rows.push(["未匹配数", ps.n_unmatched]);
+      rows.push(["超出共同支撑域", ps.n_outside_support]);
+      rows.push(["倾向得分 Pseudo R²", ps.pscore_pseudo_r2]);
+      if (ps.balance?.length) {
+        rows.push([]);
+        rows.push(["平衡性检验"]);
+        rows.push(["协变量", "处理组均值", "对照组均值", "标准化均值差(%)"]);
+        ps.balance.forEach(b => rows.push([b.variable, b.treated_mean, b.control_mean, b.std_bias_pct]));
+      }
+      rows.push([]);
+      rows.push([ps.notes || ""]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "PSM");
+    }
+
+    if (r.did_robustness) {
+      const dr = r.did_robustness;
+      const rows = [["DID 稳健性检验"]];
+      rows.push([]);
+      rows.push(["基准估计：_did 系数", `${dr.baseline_coef}（p=${dr.baseline_p_value}）`]);
+      rows.push([]);
+      const pb = dr.placebo;
+      if (pb) {
+        rows.push(["安慰剂检验", `重复 ${pb.n_runs} 次`]);
+        if (pb.p_value != null) {
+          rows.push(["随机系数均值", pb.mean]);
+          rows.push(["随机系数标准差", pb.std]);
+          rows.push(["伪p值", pb.p_value]);
+        }
+        rows.push([pb.conclusion]);
+        rows.push([]);
+      }
+      const ex = dr.exclude_policy_period;
+      if (ex) {
+        rows.push(["剔除政策当期后 _did 系数", `${ex.coef?.toFixed(3)}${ex.sig}`]);
+        rows.push(["t值", ex.t_stat?.toFixed(2)]);
+        rows.push(["N", ex.n]);
+        rows.push([]);
+      }
+      rows.push([dr.notes || ""]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "DID稳健性检验");
+    }
 
     XLSX.writeFile(wb, `实证分析_${new Date().toISOString().slice(0, 10)}.xlsx`);
   });
@@ -464,6 +540,10 @@ function CorrelationTable({ data }) {
   );
 }
 
+// 需激活码解锁的高级分析类型（与后端 api/routes/analyze.py 的 RESTRICTED_ANALYSIS_TYPES 保持一致）
+// 范围：本次新增的高级功能（PSM/DID稳健性检验/Probit/Logit）；已上线的免费功能不纳入锁定
+const LOCKED_ANALYSIS_TYPES = ["psm", "did_robustness", "probit", "logit"];
+
 // ─── 分析方法注册表 ───────────────────────────────────
 // 新增一种分析方法：在此追加一条配置即可，卡片分组、勾选逻辑均由它驱动，
 // 无需在渲染代码里新增 if 分支（category 决定卡片分组，UI 按其在数组中
@@ -475,12 +555,16 @@ const ANALYSIS_REGISTRY = [
   { type: "ols",           icon: "📈", title: "OLS 回归",     desc: "普通最小二乘 · 稳健/聚类SE", category: "主回归分析" },
   { type: "panel_fe",      icon: "🏛️", title: "固定效应",    desc: "entity FE · Hausman检验", category: "主回归分析" },
   { type: "panel_re",      icon: "🎲", title: "随机效应",     desc: "GLS估计 · xtreg, re", category: "主回归分析" },
+  { type: "probit",        icon: "📉", title: "Probit 回归",  desc: "二元被解释变量 · MLE + 边际效应", category: "主回归分析" },
+  { type: "logit",         icon: "📉", title: "Logit 回归",   desc: "二元被解释变量 · MLE + 边际效应", category: "主回归分析" },
   { type: "did",           icon: "⏱️", title: "双重差分 DID", desc: "面板双向FE · 平行趋势检验", category: "因果识别" },
   { type: "did_event",     icon: "📅", title: "多时点DID事件研究", desc: "事件窗口系数 · 平行趋势可视化检验", category: "因果识别" },
   { type: "iv",            icon: "🪛", title: "工具变量法 2SLS", desc: "两阶段最小二乘 · 弱工具变量检验", category: "因果识别" },
   { type: "moderation",    icon: "🔀", title: "调节效应分析", desc: "交互项回归 · 自动中心化", category: "机制检验" },
   { type: "mediation",     icon: "🧩", title: "中介效应分析", desc: "Baron-Kenny 三步法 + Sobel 检验", category: "机制检验" },
   { type: "heterogeneity", icon: "🧬", title: "异质性分析",   desc: "分组回归对比", category: "稳健性检验" },
+  { type: "did_robustness", icon: "🛡️", title: "DID稳健性检验", desc: "安慰剂检验 · 剔除政策当期重估", category: "稳健性检验" },
+  { type: "psm",           icon: "🎯", title: "倾向得分匹配 PSM", desc: "Logit倾向得分 · 近邻匹配 + 平衡性检验", category: "因果识别" },
   { type: "pca",           icon: "🧮", title: "主成分分析 PCA", desc: "降维 · 载荷与方差贡献率", category: "数据探索" },
 ];
 
@@ -656,6 +740,7 @@ function RegressionTable({ data, label, bracketMode = "t" }) {
   const mainVars = data.coefficients.filter(c => c.variable !== "_cons" && !dummySet.has(c.variable));
   const dummyVars = data.coefficients.filter(c => dummySet.has(c.variable));
   const isPanel = data.type === "fe" || data.type === "re";
+  const isBinary = data.type === "probit" || data.type === "logit";
   const catVars = data.categorical_vars || [];
 
   function renderCoefCell(c) {
@@ -711,6 +796,12 @@ function RegressionTable({ data, label, bracketMode = "t" }) {
               <tr className="stat-row"><td className="col-var">R² (within)</td><td className="col-reg">{data.r2_within?.toFixed(3)}</td></tr>
               <tr className="stat-row"><td className="col-var">R² (overall)</td><td className="col-reg">{data.r2_overall?.toFixed(3)}</td></tr>
             </>
+          ) : isBinary ? (
+            <>
+              <tr className="stat-row"><td className="col-var">Pseudo R² (McFadden)</td><td className="col-reg">{data.pseudo_r2?.toFixed(3)}</td></tr>
+              <tr className="stat-row"><td className="col-var">Log-likelihood</td><td className="col-reg">{data.log_likelihood?.toFixed(3)}</td></tr>
+              <tr className="stat-row"><td className="col-var">LR χ²</td><td className="col-reg">{data.lr_chi2?.toFixed(3)}{data.lr_pvalue != null && <sup className="sig">{sigStars(data.lr_pvalue)}</sup>}</td></tr>
+            </>
           ) : (
             <>
               <tr className="stat-row"><td className="col-var">R²</td><td className="col-reg">{data.r2?.toFixed(3)}</td></tr>
@@ -725,6 +816,89 @@ function RegressionTable({ data, label, bracketMode = "t" }) {
           <strong>Hausman 检验</strong>：χ²={data.hausman.chi2}，p={data.hausman.p_value}
           <br />{data.hausman.conclusion}
         </div>
+      )}
+      <div className="tbl-note">{data.notes}</div>
+    </div>
+  );
+}
+
+function MarginalEffectsTable({ data }) {
+  if (!data?.margeff?.length) return null;
+  return (
+    <div className="result-block">
+      <div className="tbl-title">平均边际效应（AME）</div>
+      <table className="acad-table reg-tbl">
+        <thead><tr>
+          <th className="col-var">变量</th>
+          <th className="col-reg">dy/dx</th>
+          <th className="col-reg">Std. Err.</th>
+          <th className="col-reg">z</th>
+          <th className="col-reg">p</th>
+        </tr></thead>
+        <tbody>
+          {data.margeff.map((m, i) => (
+            <tr key={i}>
+              <td className="col-var">{m.variable}</td>
+              <td className="col-reg">{m.dydx?.toFixed(4)}<sup className="sig">{m.sig}</sup></td>
+              <td className="col-reg">{m.std_error?.toFixed(4)}</td>
+              <td className="col-reg">{m.z_stat?.toFixed(2)}</td>
+              <td className="col-reg">{m.p_value?.toFixed(3)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="tbl-note">dy/dx 表示自变量变化对“被解释变量=1”概率的平均边际影响，对应 Stata margins, dydx(*)；***p&lt;0.01, **p&lt;0.05, *p&lt;0.1</div>
+    </div>
+  );
+}
+
+function PSMTable({ data }) {
+  if (!data) return null;
+  return (
+    <div className="result-block">
+      <div className="tbl-title">倾向得分匹配（PSM）结果</div>
+      <table className="acad-table reg-tbl">
+        <thead><tr>
+          <th className="col-var"></th>
+          <th className="col-reg">ATT</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td className="col-var">{data.dep_var}</td>
+            <td className="col-reg">
+              <div>{data.att?.toFixed(4)}<sup className="sig">{data.sig}</sup></div>
+              <div className="tval">({data.se != null ? data.se.toFixed(4) : "—"})</div>
+            </td>
+          </tr>
+          <tr className="stat-row"><td className="col-var">t</td><td className="col-reg">{data.t_stat ?? "—"}</td></tr>
+          <tr className="stat-row"><td className="col-var">p</td><td className="col-reg">{data.p_value ?? "—"}</td></tr>
+          <tr className="stat-row"><td className="col-var">处理组 N</td><td className="col-reg">{data.n_treated?.toLocaleString()}</td></tr>
+          <tr className="stat-row"><td className="col-var">对照组 N</td><td className="col-reg">{data.n_control?.toLocaleString()}</td></tr>
+          <tr className="stat-row"><td className="col-var">匹配成功数</td><td className="col-reg">{data.n_matched?.toLocaleString()}</td></tr>
+          <tr className="stat-row"><td className="col-var">未匹配数</td><td className="col-reg">{data.n_unmatched?.toLocaleString()}</td></tr>
+          <tr className="stat-row"><td className="col-var">超出共同支撑域</td><td className="col-reg">{data.n_outside_support?.toLocaleString()}</td></tr>
+          <tr className="stat-row"><td className="col-var">倾向得分 Pseudo R²</td><td className="col-reg">{data.pscore_pseudo_r2?.toFixed(4)}</td></tr>
+        </tbody>
+      </table>
+      {data.balance?.length > 0 && (
+        <table className="acad-table reg-tbl" style={{ marginTop: 10 }}>
+          <thead><tr>
+            <th className="col-var">协变量</th>
+            <th className="col-reg">处理组均值</th>
+            <th className="col-reg">对照组均值</th>
+            <th className="col-reg">标准化均值差(%)</th>
+          </tr></thead>
+          <tbody>
+            {data.balance.map((b, i) => (
+              <tr key={i}>
+                <td className="col-var">{b.variable}</td>
+                <td className="col-reg">{b.treated_mean}</td>
+                <td className="col-reg">{b.control_mean}</td>
+                <td className="col-reg">{b.std_bias_pct}{Math.abs(b.std_bias_pct) >= 10 ? " ⚠️" : ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
       <div className="tbl-note">{data.notes}</div>
     </div>
@@ -1238,6 +1412,10 @@ export default function Home() {
   const [winsorizeVars, setWinsorizeVars] = useState([]);
   const [winsorizeLower, setWinsorizeLower] = useState(1);
   const [winsorizeUpper, setWinsorizeUpper] = useState(99);
+  const [lagVars, setLagVars] = useState([]);
+  const [lagPeriods, setLagPeriods] = useState(1);
+  const [lagEntityVar, setLagEntityVar] = useState("");
+  const [lagTimeVar, setLagTimeVar] = useState("");
   const [cleanedData, setCleanedData] = useState(null);
   const [cleanReport, setCleanReport] = useState(null);
   const [cleanPreview, setCleanPreview] = useState(null);
@@ -1262,6 +1440,8 @@ export default function Home() {
   const [timeEffects, setTimeEffects] = useState(false);
   const [moderatorVar, setModeratorVar] = useState("");
   const [treatmentVar, setTreatmentVar] = useState("");
+  const [psmNeighbors, setPsmNeighbors] = useState(1);
+  const [psmCaliper, setPsmCaliper] = useState("");
   const [policyTime, setPolicyTime] = useState("");
   const [treatTimeVar, setTreatTimeVar] = useState("");
   const [windowPre, setWindowPre] = useState(3);
@@ -1283,10 +1463,22 @@ export default function Home() {
   const [trialSubmitting, setTrialSubmitting] = useState(false);
   const [trialSubmitted, setTrialSubmitted] = useState(false);
 
+  const [showUnlockModal, setShowUnlockModal] = useState(false);
+  const [unlocked, setUnlocked] = useState(false);
+  const [unlockCodeInput, setUnlockCodeInput] = useState("");
+  const [unlockError, setUnlockError] = useState("");
+  const [unlockVerifying, setUnlockVerifying] = useState(false);
+  const [unlockContact, setUnlockContact] = useState("");
+  const [unlockSubmitting, setUnlockSubmitting] = useState(false);
+  const [unlockIssuedCode, setUnlockIssuedCode] = useState("");
+
   const fileRef = useRef();
 
   useEffect(() => {
     track("page_view");
+    try {
+      if (localStorage.getItem("activation_unlocked") === "1") setUnlocked(true);
+    } catch (e) {}
   }, []);
 
   function fmtSize(b) {
@@ -1339,6 +1531,78 @@ export default function Home() {
     setTrialSubmitting(false);
     setTrialSubmitted(true);
     logTrialEvent("trial_modal_submitted");
+  }
+
+  function openUnlockModal(source = "locked_analysis_card") {
+    setUnlockError("");
+    setUnlockIssuedCode("");
+    setShowUnlockModal(true);
+    track("unlock_modal_shown", { source });
+  }
+
+  function handleExport(format, doExport) {
+    if (!unlocked) {
+      track("export_blocked", { format });
+      openUnlockModal("export");
+      return;
+    }
+    doExport();
+    track("export_clicked", { format });
+    maybeShowTrialModal();
+  }
+
+  function unlockWithCode(code) {
+    try {
+      localStorage.setItem("activation_code", code);
+      localStorage.setItem("activation_unlocked", "1");
+    } catch (e) {}
+    setUnlocked(true);
+    track("unlock_success");
+  }
+
+  async function verifyUnlockCode() {
+    const code = unlockCodeInput.trim();
+    if (!code) return;
+    setUnlockVerifying(true);
+    setUnlockError("");
+    try {
+      const res = await fetch(`${API_URL}/api/activation/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json();
+      if (data.valid) {
+        unlockWithCode(code);
+      } else {
+        setUnlockError("激活码无效，请检查后重试");
+      }
+    } catch (e) {
+      setUnlockError("校验失败，请检查网络后重试");
+    }
+    setUnlockVerifying(false);
+  }
+
+  async function submitUnlockContact() {
+    const contact = unlockContact.trim();
+    if (!contact) return;
+    setUnlockSubmitting(true);
+    try {
+      const res = await fetch(`${API_URL}/api/leads/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contact, source: "unlock_modal" }),
+      });
+      const data = await res.json();
+      if (data.activation_code) {
+        setUnlockIssuedCode(data.activation_code);
+        unlockWithCode(data.activation_code);
+      }
+    } catch (e) {
+      setUnlockError("提交失败，请检查网络后重试");
+    }
+    setUnlockSubmitting(false);
+    track("unlock_contact_submitted", { source: "unlock_modal" });
   }
 
   async function handleUpload(newFiles) {
@@ -1394,6 +1658,9 @@ export default function Home() {
     setDropCols([]);
     setStrCols([]);
     setLogVars([]);
+    setLagVars([]);
+    setLagEntityVar("");
+    setLagTimeVar("");
     setFieldMaps(prev => { const n = { ...prev }; delete n[fn]; return n; });
     setMergeCheck(null);
     setSessionId(null);
@@ -1453,6 +1720,10 @@ export default function Home() {
       winsorize_vars: winsorizeVars,
       winsorize_lower: winsorizeLower,
       winsorize_upper: winsorizeUpper,
+      lag_vars: lagVars,
+      lag_periods: lagPeriods,
+      lag_entity_var: lagEntityVar || null,
+      lag_time_var: lagTimeVar || null,
     }));
     try {
       const res = await fetch(`${API_URL}/api/clean/merge-and-clean`, { method: "POST", body: form });
@@ -1501,6 +1772,9 @@ export default function Home() {
         standardize: pcaStandardize,
         interpret,
         custom_question: customQ || null,
+        activation_code: (typeof window !== "undefined" && localStorage.getItem("activation_code")) || null,
+        psm_neighbors: psmNeighbors,
+        psm_caliper: psmCaliper === "" ? null : psmCaliper,
       };
       if (cleanedSessionId) {
         body.cleaned_session_id = cleanedSessionId;
@@ -1547,16 +1821,17 @@ export default function Home() {
   const uniqueCols = [...new Set(allCols)];
   const uniqueMappedCols = [...new Set(mappedCols)];
   const cleanedCols = cleanedData?.columns || [];
-  const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did", "did_event"].includes(t));
-  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "did", "did_event", "heterogeneity", "iv"].includes(t));
+  const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did", "did_robustness", "did_event"].includes(t));
+  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "did", "did_event", "heterogeneity", "iv"].includes(t));
   const needsModeration = analysisTypes.includes("moderation");
   const needsMediation = analysisTypes.includes("mediation");
-  const needsDID = analysisTypes.includes("did");
+  const needsDID = analysisTypes.some(t => t === "did" || t === "did_robustness");
   const needsDIDEvent = analysisTypes.includes("did_event");
   const needsHeterogeneity = analysisTypes.includes("heterogeneity");
   const needsIV = analysisTypes.includes("iv");
   const needsPCA = analysisTypes.includes("pca");
-  const needsIndepVars = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "moderation", "mediation", "heterogeneity"].includes(t));
+  const needsIndepVars = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "heterogeneity", "psm"].includes(t));
+  const needsPSM = analysisTypes.includes("psm");
   const sectionNum = (base) => filePreviews.length > 1 ? base : base - 1;
 
   return (
@@ -1778,6 +2053,27 @@ export default function Home() {
                 </div>
               )}
               {uniqueCols.length > 0 && (
+                <div className="config-item">
+                  <label className="cfg-label">滞后自变量 <span className="cfg-hint">生成 xxx_lag1...lagN 新列，面板数据按个体分组+时间排序后滞后</span></label>
+                  <TagSelector options={uniqueCols} selected={lagVars} onChange={setLagVars} />
+                  {lagVars.length > 0 && (
+                    <>
+                      <input className="threshold-input" type="number" value={lagPeriods} step="1" min="1" max="10"
+                        onChange={e => setLagPeriods(Math.max(1, parseInt(e.target.value) || 1))}
+                        placeholder="滞后期数（默认1）" />
+                      <div style={{ marginTop: 8 }}>
+                        <span className="cfg-label" style={{ fontSize: 12, color: "#666" }}>个体变量 <span className="vh">面板数据建议填写，否则按当前行序滞后</span></span>
+                        <TagSelector options={uniqueCols} selected={lagEntityVar ? [lagEntityVar] : []} onChange={v => setLagEntityVar(v[0] || "")} single />
+                      </div>
+                      <div style={{ marginTop: 8 }}>
+                        <span className="cfg-label" style={{ fontSize: 12, color: "#666" }}>时间变量</span>
+                        <TagSelector options={uniqueCols} selected={lagTimeVar ? [lagTimeVar] : []} onChange={v => setLagTimeVar(v[0] || "")} single />
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+              {uniqueCols.length > 0 && (
                 <div className="config-item" style={{ gridColumn: "1 / -1" }}>
                   <label className="cfg-label">删除列 <span className="cfg-hint">可选</span></label>
                   <TagSelector options={uniqueCols} selected={dropCols} onChange={setDropCols} />
@@ -1830,17 +2126,21 @@ export default function Home() {
                   <div key={cat} className="acat-block">
                     <div className="acat-label"><span>{cat}</span></div>
                     <div className="analysis-grid">
-                      {ANALYSIS_REGISTRY.filter(e => e.category === cat).map(card => (
-                        <div key={card.type}
-                          className={`acard ${analysisTypes.includes(card.type) ? "active" : ""}`}
-                          onClick={() => setAnalysisTypes(prev =>
-                            prev.includes(card.type) ? prev.filter(t => t !== card.type) : [...prev, card.type]
-                          )}>
-                          <div className="ci">{card.icon}</div>
-                          <div className="ct">{card.title}</div>
-                          <div className="cd">{card.desc}</div>
-                        </div>
-                      ))}
+                      {ANALYSIS_REGISTRY.filter(e => e.category === cat).map(card => {
+                        const isLocked = LOCKED_ANALYSIS_TYPES.includes(card.type) && !unlocked;
+                        return (
+                          <div key={card.type}
+                            className={`acard ${analysisTypes.includes(card.type) ? "active" : ""} ${isLocked ? "locked" : ""}`}
+                            onClick={() => isLocked ? openUnlockModal() : setAnalysisTypes(prev =>
+                              prev.includes(card.type) ? prev.filter(t => t !== card.type) : [...prev, card.type]
+                            )}>
+                            {isLocked && <div className="lock-badge">🔒</div>}
+                            <div className="ci">{card.icon}</div>
+                            <div className="ct">{card.title}</div>
+                            <div className="cd">{card.desc}</div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 ));
@@ -1874,10 +2174,11 @@ export default function Home() {
                     {needsIndepVars && (
                       <div className="var-row">
                         <span className="vl">
-                          解释变量 X
+                          {needsPSM ? "匹配协变量" : "解释变量 X"}
                           {needsModeration && needsMediation && <span className="vh">调节/中介效应分析均取第一个选中的变量作为 X</span>}
                           {needsModeration && !needsMediation && <span className="vh">调节效应分析取第一个选中的变量作为 X</span>}
                           {!needsModeration && needsMediation && <span className="vh">中介效应分析取第一个选中的变量作为 X</span>}
+                          {needsPSM && <span className="vh">用于估计倾向得分的协变量（与下方控制变量共同构成 Logit 的解释变量）</span>}
                         </span>
                         <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={indepVars} onChange={setIndepVars} dtypes={cleanedData?.dtypes} />
                       </div>
@@ -1919,6 +2220,25 @@ export default function Home() {
                         <div className="var-row">
                           <span className="vl">工具变量 Instruments <span className="vh">与内生变量相关、但与误差项无关；数量须 ≥ 内生变量数</span></span>
                           <TagSelector options={cleanedCols.filter(c => c !== depVar && !endogVars.includes(c))} selected={instrumentVars} onChange={setInstrumentVars} dtypes={cleanedData?.dtypes} />
+                        </div>
+                      </>
+                    )}
+                    {needsPSM && (
+                      <>
+                        <div className="var-row">
+                          <span className="vl">处理组变量 Treatment <span className="vh">取值0/1，标识个体是否接受处理</span></span>
+                          <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && !controlVars.includes(c))} selected={treatmentVar ? [treatmentVar] : []} onChange={v => setTreatmentVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                        </div>
+                        <div className="var-row">
+                          <span className="vl">近邻数 <span className="vh">每个处理组个体匹配的对照组个体数量，默认1（最近邻）</span></span>
+                          <input className="threshold-input" type="number" min="1" max="10" value={psmNeighbors}
+                            onChange={e => setPsmNeighbors(Math.max(1, parseInt(e.target.value) || 1))} />
+                        </div>
+                        <div className="var-row">
+                          <span className="vl">Caliper <span className="vh">倾向得分匹配的最大允许距离，留空表示不限制</span></span>
+                          <input className="threshold-input" type="number" step="0.01" min="0" value={psmCaliper}
+                            onChange={e => setPsmCaliper(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                            placeholder="如 0.05（可留空）" />
                         </div>
                       </>
                     )}
@@ -2065,9 +2385,9 @@ export default function Home() {
                     <span className="rbadge">{analysisTypes.join(" + ").toUpperCase()}</span>
                     <span className="rtitle">实证分析报告</span>
                     <div className="export-btns">
-                      <button className="export-btn" onClick={() => { exportXlsx(analyzeResults, cleanedData); track("export_clicked", { format: "xlsx" }); maybeShowTrialModal(); }}>⬇ xlsx</button>
-                      <button className="export-btn" onClick={() => { exportDoFile(doClean, doAnalyze); track("export_clicked", { format: "do" }); maybeShowTrialModal(); }}>⬇ do 文件</button>
-                      <button className="export-btn" onClick={() => {
+                      <button className="export-btn" onClick={() => handleExport("xlsx", () => exportXlsx(analyzeResults, cleanedData))}>⬇ xlsx{!unlocked && " 🔒"}</button>
+                      <button className="export-btn" onClick={() => handleExport("do", () => exportDoFile(doClean, doAnalyze))}>⬇ do 文件{!unlocked && " 🔒"}</button>
+                      <button className="export-btn" onClick={() => handleExport("txt", () => {
                         const el = document.getElementById("result-content");
                         if (!el) return;
                         const blob = new Blob([el.innerText], { type: "text/plain" });
@@ -2075,9 +2395,7 @@ export default function Home() {
                         a.href = URL.createObjectURL(blob);
                         a.download = `实证分析_${new Date().toISOString().slice(0,10)}.txt`;
                         a.click();
-                        track("export_clicked", { format: "txt" });
-                        maybeShowTrialModal();
-                      }}>⬇ txt</button>
+                      })}>⬇ txt{!unlocked && " 🔒"}</button>
                     </div>
                   </div>
                   <div className="result-body" id="result-content">
@@ -2091,6 +2409,10 @@ export default function Home() {
                     {analyzeResults.results?.ols && <RegressionTable data={analyzeResults.results.ols} label="OLS 回归结果" />}
                     {analyzeResults.results?.panel_fe && <RegressionTable data={analyzeResults.results.panel_fe} label="固定效应回归（xtreg, fe）" />}
                     {analyzeResults.results?.panel_re && <RegressionTable data={analyzeResults.results.panel_re} label="随机效应回归（xtreg, re）" />}
+                    {analyzeResults.results?.probit && <RegressionTable data={analyzeResults.results.probit} label="Probit 回归结果" />}
+                    {analyzeResults.results?.probit && <MarginalEffectsTable data={analyzeResults.results.probit} />}
+                    {analyzeResults.results?.logit && <RegressionTable data={analyzeResults.results.logit} label="Logit 回归结果" />}
+                    {analyzeResults.results?.logit && <MarginalEffectsTable data={analyzeResults.results.logit} />}
                     {analyzeResults.results?.panel_balance && (() => {
                       const pb = analyzeResults.results.panel_balance;
                       return (
@@ -2129,6 +2451,7 @@ export default function Home() {
                         </>
                       );
                     })()}
+                    {analyzeResults.results?.psm && <PSMTable data={analyzeResults.results.psm} />}
                     {analyzeResults.results?.heterogeneity && <HeterogeneityTable data={analyzeResults.results.heterogeneity} />}
                     {analyzeResults.results?.iv && <IVTable data={analyzeResults.results.iv} />}
                     {analyzeResults.results?.did && (() => {
@@ -2158,6 +2481,47 @@ export default function Home() {
                         <EventStudyTable data={analyzeResults.results.did_event} />
                       </>
                     )}
+                    {analyzeResults.results?.did_robustness && (() => {
+                      const dr = analyzeResults.results.did_robustness;
+                      const pb = dr.placebo;
+                      const ex = dr.exclude_policy_period;
+                      return (
+                        <div className="result-block">
+                          <div className="tbl-title">DID 稳健性检验</div>
+                          <div className="hausman-box">
+                            <strong>基准估计</strong>：_did 系数 = {dr.baseline_coef}{sigStars(dr.baseline_p_value)}（p={dr.baseline_p_value}）
+                          </div>
+                          {pb && (
+                            <div className={pb.p_value != null && pb.p_value < 0.1 ? "hausman-box" : "dropped-warn"} style={{ marginTop: 10 }}>
+                              <strong>安慰剂检验</strong>（随机重新分配处理组身份，重复 {pb.n_runs} 次）：
+                              {pb.p_value != null ? (
+                                <>随机系数均值={pb.mean}，标准差={pb.std}，伪p值={pb.p_value}</>
+                              ) : null}
+                              <br />{pb.conclusion}
+                            </div>
+                          )}
+                          {ex && (
+                            <table className="acad-table reg-tbl" style={{ marginTop: 10 }}>
+                              <thead><tr>
+                                <th className="col-var">剔除政策当期后</th>
+                                <th className="col-reg">_did 系数</th>
+                              </tr></thead>
+                              <tbody>
+                                <tr>
+                                  <td className="col-var">{dr.dep_var}</td>
+                                  <td className="col-reg">
+                                    <div>{ex.coef?.toFixed(3)}<sup className="sig">{ex.sig}</sup></div>
+                                    <div className="tval">({ex.t_stat?.toFixed(2)})</div>
+                                  </td>
+                                </tr>
+                                <tr className="stat-row"><td className="col-var">N</td><td className="col-reg">{ex.n?.toLocaleString()}</td></tr>
+                              </tbody>
+                            </table>
+                          )}
+                          <div className="tbl-note">{dr.notes}</div>
+                        </div>
+                      );
+                    })()}
                     {analyzeResults.interpretation && (
                       <div className="interp-result">
                         <div className="ir-title">AI 解读</div>
@@ -2207,6 +2571,65 @@ export default function Home() {
                 <div className="trial-modal-title">✅ 提交成功</div>
                 <div className="trial-modal-desc">感谢关注，高级功能上线后会第一时间联系你。</div>
                 <button className="trial-modal-submit" onClick={() => setShowTrialModal(false)}>知道了</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showUnlockModal && (
+        <div className="trial-modal-mask" onClick={() => setShowUnlockModal(false)}>
+          <div className="trial-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="trial-modal-close" onClick={() => setShowUnlockModal(false)}>✕</button>
+            {unlocked ? (
+              <>
+                <div className="trial-modal-title">✅ 已解锁高级功能</div>
+                <div className="trial-modal-desc">
+                  {unlockIssuedCode
+                    ? <>你的激活码：<strong>{unlockIssuedCode}</strong>（已自动保存，下次访问无需重新输入）</>
+                    : "激活码已验证，高级分析方法已解锁。"}
+                </div>
+                <button className="trial-modal-submit" onClick={() => setShowUnlockModal(false)}>知道了</button>
+              </>
+            ) : (
+              <>
+                <div className="trial-modal-title">🔒 高级功能需激活码解锁</div>
+                <div className="trial-modal-desc">
+                  已有激活码可直接输入解锁；没有的话，留下邮箱或微信即可立即获取试用激活码。
+                </div>
+                <div className="trial-modal-form">
+                  <input
+                    className="trial-modal-input"
+                    type="text"
+                    placeholder="输入激活码"
+                    value={unlockCodeInput}
+                    onChange={(e) => setUnlockCodeInput(e.target.value)}
+                  />
+                  <button
+                    className="trial-modal-submit"
+                    disabled={unlockVerifying || !unlockCodeInput.trim()}
+                    onClick={verifyUnlockCode}
+                  >
+                    {unlockVerifying ? "校验中…" : "解锁"}
+                  </button>
+                </div>
+                <div className="trial-modal-form">
+                  <input
+                    className="trial-modal-input"
+                    type="text"
+                    placeholder="没有激活码？留下邮箱或微信，立即获取"
+                    value={unlockContact}
+                    onChange={(e) => setUnlockContact(e.target.value)}
+                  />
+                  <button
+                    className="trial-modal-submit"
+                    disabled={unlockSubmitting || !unlockContact.trim()}
+                    onClick={submitUnlockContact}
+                  >
+                    {unlockSubmitting ? "提交中…" : "获取激活码"}
+                  </button>
+                </div>
+                {unlockError && <div className="dropped-warn" style={{ marginTop: 8 }}>{unlockError}</div>}
               </>
             )}
           </div>
@@ -2334,6 +2757,8 @@ export default function Home() {
         .acard:hover { border-color: #2c4a8a; }
         .acard.active { border-color: #2c4a8a; background: rgba(44,74,138,0.04); }
         .acard.active::after { content: '✓'; position: absolute; top: 10px; right: 12px; color: #2c4a8a; font-weight: 700; }
+        .acard.locked { background: #f5f3ee; opacity: 0.75; }
+        .lock-badge { position: absolute; top: 10px; right: 12px; font-size: 13px; }
         .ci { font-size: 20px; margin-bottom: 6px; }
         .ct { font-size: 13px; font-weight: 600; margin-bottom: 3px; }
         .cd { font-size: 11px; color: #8a8078; font-family: 'IBM Plex Mono', monospace; line-height: 1.5; }

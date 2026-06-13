@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routes import clean, analyze, health, leads
+from routes import clean, analyze, health, leads, activation
 from dotenv import load_dotenv
 import logging
 
@@ -26,6 +26,7 @@ app.include_router(health.router)
 app.include_router(clean.router,   prefix="/api/clean")
 app.include_router(analyze.router, prefix="/api/analyze")
 app.include_router(leads.router,   prefix="/api/leads")
+app.include_router(activation.router, prefix="/api/activation")
 
 if __name__ == "__main__":
     import uvicorn
