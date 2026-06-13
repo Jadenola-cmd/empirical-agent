@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import math, logging
+import concurrent.futures
 import numpy as np
 import pandas as pd
 
@@ -24,6 +25,11 @@ from services.interpreter import interpret_results
 from services.session_store import load_cleaned, save_cleaned
 
 router = APIRouter()
+
+# 单次分析请求超时熔断：避免某个分析组合在大数据上长时间占满 CPU 拖垮整机
+# （2026-06-12 曾出现 panel_fe/pca/did/moderation/heterogeneity 组合卡死近9小时）
+ANALYSIS_TIMEOUT_SECONDS = 90
+_analysis_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 
 def _sanitize(obj):
@@ -263,6 +269,49 @@ def run_analysis(req: AnalysisRequest):
 
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
 
+    try:
+        results, errors = _analysis_executor.submit(
+            _run_all_analyses, req, df, df_full, numeric_cols
+        ).result(timeout=ANALYSIS_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            "[analyze] timeout types=%s dep=%s after %ss",
+            ",".join(req.analysis_types),
+            req.dep_var or "-",
+            ANALYSIS_TIMEOUT_SECONDS,
+        )
+        raise HTTPException(
+            status_code=504,
+            detail=f"分析超时（超过 {ANALYSIS_TIMEOUT_SECONDS} 秒未完成），请尝试减少同时勾选的分析类型或缩减数据量后重试",
+        )
+
+    interpretation = None
+    if req.interpret and results:
+        try:
+            interpretation = interpret_results(results, req.custom_question)
+        except Exception as e:
+            interpretation = {"text": f"AI解读失败：{str(e)}"}
+
+    do_analyze = _gen_analyze_do(req)
+
+    logger.info(
+        "[analyze] types=%s dep=%s errors=%s ai=%s",
+        ",".join(req.analysis_types),
+        req.dep_var or "-",
+        ",".join(errors.keys()) if errors else "none",
+        req.interpret,
+    )
+
+    return _sanitize({
+        "success": True,
+        "results": results,
+        "errors": errors if errors else None,
+        "interpretation": interpretation,
+        "do_analyze": do_analyze,
+    })
+
+
+def _run_all_analyses(req: "AnalysisRequest", df: pd.DataFrame, df_full: pd.DataFrame, numeric_cols: List[str]):
     results = {}
     errors = {}
 
@@ -456,27 +505,4 @@ def run_analysis(req: AnalysisRequest):
         except Exception as e:
             errors[analysis_type] = str(e)
 
-    interpretation = None
-    if req.interpret and results:
-        try:
-            interpretation = interpret_results(results, req.custom_question)
-        except Exception as e:
-            interpretation = {"text": f"AI解读失败：{str(e)}"}
-
-    do_analyze = _gen_analyze_do(req)
-
-    logger.info(
-        "[analyze] types=%s dep=%s errors=%s ai=%s",
-        ",".join(req.analysis_types),
-        req.dep_var or "-",
-        ",".join(errors.keys()) if errors else "none",
-        req.interpret,
-    )
-
-    return _sanitize({
-        "success": True,
-        "results": results,
-        "errors": errors if errors else None,
-        "interpretation": interpretation,
-        "do_analyze": do_analyze,
-    })
+    return results, errors
