@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-06-14
+
+**变更**
+- PSM 平衡性检验输出对照 Stata `pstest` 格式重做：`run_psm`（`api/services/stats.py`）匹配时追踪每个对照组观测的匹配权重，平衡性表按协变量拆为 Unmatched/Matched 两行，给出处理组均值、（按权重加权的）对照组均值、%Bias、组间t检验(t/p>|t|)，Matched 行新增 %Reduct|Bias|（偏差缩减比例）；新增 `balance_summary` 字段（Pseudo R²、LR χ²及p值、匹配前后 Mean/Median |Bias|）。前端 `PSMTable` 组件与 Excel 导出同步改为两行式表格展示。
+
+---
+
 ## 2026-06-13（续2）
 
 **修复/重构**

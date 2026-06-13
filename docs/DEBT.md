@@ -6,6 +6,15 @@
 
 ## 后端
 
+**`did_robustness` 仅支持同质处理时点，与多时点DID事件研究（`did_event`）的交错时点设定不一致**
+2026-06-14 用户反馈：`run_did_robustness`（`api/services/stats.py:580`）内部固定用单一 `policy_time` 构造 `_post = (time >= policy_time)` 和 `_did = treat × _post`，安慰剂检验与剔除政策当期都基于这个同质处理假设。而 `did_event`（多时点事件研究）支持 `treat_time_var`（每个体各自的处理年份，交错处理）。当用户做的是多时点DID时，`did_robustness` 的配置与其设定不一致——前端"DID事件研究 配置"区块目前在 `treatTimeVar` 已填时甚至不展示 `policy_time` 输入框，但 `did_robustness` 仍要求一个统一 `policy_time`，导致用户配置时无法对应。
+**待办**：让 `run_did_robustness` 支持接收 `treat_time_var`，当提供时按个体异质处理时点构造 `_post`（`time >= 该个体的处理时点`，从未处理个体 `_post` 恒为0），安慰剂检验的随机重分配逻辑也需要同步调整为对每个个体随机赋一个处理时点（或维持"是否处理"随机但保留原个体的处理时点分布，需进一步设计）。前端"DID事件研究 配置"中 `treatTimeVar` 与 `policyTime` 的传参需同时喂给 `did_robustness`。
+
+**PSM 对面板数据采用"混合/池化"匹配，未按截面分期匹配**
+2026-06-14 用户提问引出：`run_psm`（`api/services/stats.py:1417`）完全不使用 `entity_var`/`time_var`，把传入的数据当作一个普通横截面，将所有"个体×年份"观测一起做 Logit 估计倾向得分 + 近邻匹配（pooled/mixed matching）。
+若输入数据是面板（多期），这种做法存在已知问题：①同一个体在不同年份的观测被当作独立样本，违反匹配方法的独立性假设，可能造成伪重复（pseudo-replication）和标准误低估；②处理组个体的"处理前"和"处理后"观测可能互相匹配，污染ATT估计。Stata 中常见的 PSM-DID 实践是先在**基准期（处理前截面）**按协变量做一次性匹配，得到匹配样本后再代入 DID 估计，而不是对全部面板观测做混合匹配。
+**待办**：与用户讨论是否需要改为"基准期截面匹配"模式（需新增基准期选择、按 `entity_var` 去重为截面、匹配结果如何映射回面板等设计），当前混合匹配模式已在结果 `notes` 中说明（待确认是否已说明，需补充面板场景的提示）。
+
 **`.xls` 文件不支持**
 未安装 `xlrd`，用户上传 `.xls` 会报错。解析层（`data_loader.py`）只处理 `.xlsx`/`.csv`/`.dta`。如需支持，`pip install xlrd` 并在 `data_loader.py` 添加分支。
 

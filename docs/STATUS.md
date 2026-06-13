@@ -25,9 +25,12 @@
 
 > 2026-06-13（续2）："02 变量配置"区域按方案B完成结构性重排：拆分为"通用配置"（Y/X或协变量/控制变量/标准误）+ 各分析类型独立的带标题子区块（处理组变量 Treatment / 调节效应分析 配置 / 中介效应分析 配置 / 异质性分析 配置 / 工具变量法 配置 / PSM 配置 / DID(/稳健性检验) 配置 / DID事件研究 配置 / 面板数据设置），新增 `.config-group`/`.config-group-title` CSS。同时修复 `needsReg` 缺 `"psm"`/`"did_robustness"` 的bug（单选PSM或单选DID稳健性检验时配置区此前完全不渲染）；新增 `needsSE`（不含psm）控制标准误区块显示；Treatment 处理组变量在PSM/DID/DID事件研究间合并为单一控件，标题标注"用于：XX"说明共享归属，避免重复字段。`npx next build` 编译通过。
 
+> 2026-06-14：PSM 平衡性检验输出改为对照 Stata `pstest` 格式——`run_psm` 新增匹配权重追踪（记录每个对照组观测被用作匹配对象的次数/n_neighbors），平衡性表按协变量拆成 Unmatched/Matched 两行，分别给出处理组均值、（加权）对照组均值、%Bias、组间t检验，并新增 %Reduct|Bias|（匹配后偏差缩减比例）；新增 `balance_summary`（Pseudo R²、LR χ²及其p值、匹配前后 Mean/Median |Bias|）。前端 `PSMTable` 与 Excel 导出同步改版为两行式表格。已用 `test_data_psm_did.csv` 验证计算无报错。另：记录两项待讨论债务到 `docs/DEBT.md`——① `did_robustness` 仅支持同质处理时点，与 `did_event` 的交错处理时点（`treat_time_var`）不一致，需后续支持；② `run_psm` 对面板数据采用混合(pooled)匹配而非截面分期匹配，存在伪重复风险，需与用户讨论是否改为基准期截面匹配。
+
 ## 进行中
 
-无。
+- [ ] PSM按截面分期匹配 vs 当前混合匹配：待与用户讨论是否需要改造（涉及基准期选择、面板转截面、匹配结果映射回面板等设计），详见 `docs/DEBT.md`
+- [ ] `did_robustness` 支持交错处理时点（`treat_time_var`），与 `did_event` 配置保持一致，详见 `docs/DEBT.md`
 
 ## 下次会话优先处理
 

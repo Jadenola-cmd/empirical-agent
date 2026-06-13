@@ -329,12 +329,21 @@ function exportXlsx(analyzeResults, cleanedData) {
       rows.push(["匹配成功数", ps.n_matched]);
       rows.push(["未匹配数", ps.n_unmatched]);
       rows.push(["超出共同支撑域", ps.n_outside_support]);
-      rows.push(["倾向得分 Pseudo R²", ps.pscore_pseudo_r2]);
       if (ps.balance?.length) {
         rows.push([]);
-        rows.push(["平衡性检验"]);
-        rows.push(["协变量", "处理组均值", "对照组均值", "标准化均值差(%)"]);
-        ps.balance.forEach(b => rows.push([b.variable, b.treated_mean, b.control_mean, b.std_bias_pct]));
+        rows.push(["平衡性检验（对照 Stata pstest）"]);
+        rows.push(["协变量", "样本", "处理组均值", "对照组均值", "%Bias", "%Reduct|Bias|", "t", "p>|t|"]);
+        ps.balance.forEach(b => {
+          rows.push([b.variable, "Unmatched", b.treated_mean_unmatched, b.control_mean_unmatched, b.bias_unmatched, "", b.t_unmatched ?? "", b.p_unmatched ?? ""]);
+          rows.push(["", "Matched", b.treated_mean_matched ?? "", b.control_mean_matched ?? "", b.bias_matched ?? "", b.pct_reduct ?? "", b.t_matched ?? "", b.p_matched ?? ""]);
+        });
+      }
+      if (ps.balance_summary) {
+        const bs = ps.balance_summary;
+        rows.push([]);
+        rows.push(["Pseudo R²", bs.ps_r2, "LR χ²", bs.lr_chi2, "p>χ²", bs.lr_chi2_pvalue]);
+        rows.push(["Mean |Bias|（匹配前→后）", `${bs.mean_bias_unmatched} → ${bs.mean_bias_matched ?? "—"}`]);
+        rows.push(["Median |Bias|（匹配前→后）", `${bs.median_bias_unmatched} → ${bs.median_bias_matched ?? "—"}`]);
       }
       rows.push([]);
       rows.push([ps.notes || ""]);
@@ -877,28 +886,55 @@ function PSMTable({ data }) {
           <tr className="stat-row"><td className="col-var">匹配成功数</td><td className="col-reg">{data.n_matched?.toLocaleString()}</td></tr>
           <tr className="stat-row"><td className="col-var">未匹配数</td><td className="col-reg">{data.n_unmatched?.toLocaleString()}</td></tr>
           <tr className="stat-row"><td className="col-var">超出共同支撑域</td><td className="col-reg">{data.n_outside_support?.toLocaleString()}</td></tr>
-          <tr className="stat-row"><td className="col-var">倾向得分 Pseudo R²</td><td className="col-reg">{data.pscore_pseudo_r2?.toFixed(4)}</td></tr>
         </tbody>
       </table>
       {data.balance?.length > 0 && (
-        <table className="acad-table reg-tbl" style={{ marginTop: 10 }}>
-          <thead><tr>
-            <th className="col-var">协变量</th>
-            <th className="col-reg">处理组均值</th>
-            <th className="col-reg">对照组均值</th>
-            <th className="col-reg">标准化均值差(%)</th>
-          </tr></thead>
-          <tbody>
-            {data.balance.map((b, i) => (
-              <tr key={i}>
-                <td className="col-var">{b.variable}</td>
-                <td className="col-reg">{b.treated_mean}</td>
-                <td className="col-reg">{b.control_mean}</td>
-                <td className="col-reg">{b.std_bias_pct}{Math.abs(b.std_bias_pct) >= 10 ? " ⚠️" : ""}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="tbl-scroll">
+          <table className="acad-table reg-tbl" style={{ marginTop: 10 }}>
+            <thead><tr>
+              <th className="col-var">协变量</th>
+              <th className="col-reg">样本</th>
+              <th className="col-reg">处理组均值</th>
+              <th className="col-reg">对照组均值</th>
+              <th className="col-reg">%Bias</th>
+              <th className="col-reg">%Reduct|Bias|</th>
+              <th className="col-reg">t</th>
+              <th className="col-reg">p&gt;|t|</th>
+            </tr></thead>
+            <tbody>
+              {data.balance.map((b, i) => (
+                <React.Fragment key={i}>
+                  <tr>
+                    <td className="col-var" rowSpan={2}>{b.variable}</td>
+                    <td className="col-reg">Unmatched</td>
+                    <td className="col-reg">{b.treated_mean_unmatched}</td>
+                    <td className="col-reg">{b.control_mean_unmatched}</td>
+                    <td className="col-reg">{b.bias_unmatched}</td>
+                    <td className="col-reg">—</td>
+                    <td className="col-reg">{b.t_unmatched ?? "—"}</td>
+                    <td className="col-reg">{b.p_unmatched ?? "—"}</td>
+                  </tr>
+                  <tr className="dummy-coef-row">
+                    <td className="col-reg">Matched</td>
+                    <td className="col-reg">{b.treated_mean_matched ?? "—"}</td>
+                    <td className="col-reg">{b.control_mean_matched ?? "—"}</td>
+                    <td className="col-reg">{b.bias_matched ?? "—"}{Math.abs(b.bias_matched ?? 0) >= 10 ? " ⚠️" : ""}</td>
+                    <td className="col-reg">{b.pct_reduct ?? "—"}</td>
+                    <td className="col-reg">{b.t_matched ?? "—"}</td>
+                    <td className="col-reg">{b.p_matched ?? "—"}</td>
+                  </tr>
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {data.balance_summary && (
+        <div className="tbl-note">
+          Pseudo R² = {data.balance_summary.ps_r2}　LR χ² = {data.balance_summary.lr_chi2}（p = {data.balance_summary.lr_chi2_pvalue}）
+          Mean |Bias|: {data.balance_summary.mean_bias_unmatched} → {data.balance_summary.mean_bias_matched ?? "—"}
+          Median |Bias|: {data.balance_summary.median_bias_unmatched} → {data.balance_summary.median_bias_matched ?? "—"}
+        </div>
       )}
       <div className="tbl-note">{data.notes}</div>
     </div>

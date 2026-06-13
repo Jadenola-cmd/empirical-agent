@@ -1470,7 +1470,9 @@ def run_psm(
     # 2 & 3. 近邻匹配（有放回）+ ATT
     diffs = []
     n_unmatched = 0
-    for _, row in treated.iterrows():
+    matched_treated_mask = np.zeros(len(treated), dtype=bool)
+    control_weight = np.zeros(len(control), dtype=float)
+    for pos, (_, row) in enumerate(treated.iterrows()):
         dists = np.abs(control_pscores - row["_pscore"])
         if caliper is not None:
             within = dists <= caliper
@@ -1483,6 +1485,9 @@ def run_psm(
             order = np.argsort(dists)[:n_neighbors]
         matched_y = control_y[order].mean()
         diffs.append(row[dep_var] - matched_y)
+        matched_treated_mask[pos] = True
+        for j in order:
+            control_weight[j] += 1.0 / len(order)
 
     n_matched = len(diffs)
     if n_matched == 0:
@@ -1497,18 +1502,73 @@ def run_psm(
     else:
         se, t_stat, p_value = float("nan"), float("nan"), float("nan")
 
-    # 4. 平衡性检验：标准化均值差（处理组 vs 全部对照组，匹配前）
+    # 4. 平衡性检验：标准化均值差 + t检验，匹配前(Unmatched)/匹配后(Matched) 对照 Stata pstest 输出
+    matched_weight_sum = float(control_weight.sum())
+    n1_matched = int(matched_treated_mask.sum())
     balance = []
     for cv in covariates_final:
-        t_mean, c_mean = treated[cv].mean(), control[cv].mean()
-        pooled_sd = np.sqrt((treated[cv].var(ddof=1) + control[cv].var(ddof=1)) / 2)
-        std_bias = (t_mean - c_mean) / pooled_sd * 100 if pooled_sd > 0 else 0.0
+        t_vals = treated[cv].to_numpy(dtype=float)
+        c_vals = control[cv].to_numpy(dtype=float)
+        t_mean_u, c_mean_u = float(t_vals.mean()), float(c_vals.mean())
+        var_t_u = float(t_vals.var(ddof=1)) if len(t_vals) > 1 else 0.0
+        var_c_u = float(c_vals.var(ddof=1)) if len(c_vals) > 1 else 0.0
+        pooled_sd = np.sqrt((var_t_u + var_c_u) / 2)
+        bias_u = (t_mean_u - c_mean_u) / pooled_sd * 100 if pooled_sd > 0 else 0.0
+        if len(t_vals) > 1 and len(c_vals) > 1:
+            t_u, p_u = stats.ttest_ind(t_vals, c_vals, equal_var=True)
+            t_u, p_u = float(t_u), float(p_u)
+        else:
+            t_u, p_u = float("nan"), float("nan")
+
+        treated_mean_m = control_mean_m = bias_m = pct_reduct = None
+        t_m_stat = p_m = None
+        if n1_matched > 0 and matched_weight_sum > 0:
+            t_vals_m = t_vals[matched_treated_mask]
+            treated_mean_m = float(t_vals_m.mean())
+            control_mean_m = float(np.average(c_vals, weights=control_weight))
+            bias_m = (treated_mean_m - control_mean_m) / pooled_sd * 100 if pooled_sd > 0 else 0.0
+            pct_reduct = (100 * (1 - abs(bias_m) / abs(bias_u))) if abs(bias_u) > 1e-12 else None
+
+            n2 = matched_weight_sum
+            var_t_m = float(t_vals_m.var(ddof=1)) if n1_matched > 1 else 0.0
+            var_c_m = (
+                float(np.average((c_vals - control_mean_m) ** 2, weights=control_weight) * (n2 / (n2 - 1)))
+                if n2 > 1 else 0.0
+            )
+            if n1_matched > 1 and n2 > 1:
+                pooled_var_m = ((n1_matched - 1) * var_t_m + (n2 - 1) * var_c_m) / (n1_matched + n2 - 2)
+                se_m = np.sqrt(pooled_var_m * (1 / n1_matched + 1 / n2))
+                if se_m > 0:
+                    t_m_stat = float((treated_mean_m - control_mean_m) / se_m)
+                    df_m = n1_matched + n2 - 2
+                    p_m = float(2 * (1 - stats.t.cdf(abs(t_m_stat), df_m)))
+
         balance.append({
-            "variable":      cv,
-            "treated_mean":  round(float(t_mean), 4),
-            "control_mean":  round(float(c_mean), 4),
-            "std_bias_pct":  round(float(std_bias), 2),
+            "variable":               cv,
+            "treated_mean_unmatched": round(t_mean_u, 4),
+            "control_mean_unmatched": round(c_mean_u, 4),
+            "bias_unmatched":         round(float(bias_u), 2),
+            "t_unmatched":            round(t_u, 3) if t_u == t_u else None,
+            "p_unmatched":            round(p_u, 4) if p_u == p_u else None,
+            "treated_mean_matched":   round(treated_mean_m, 4) if treated_mean_m is not None else None,
+            "control_mean_matched":   round(control_mean_m, 4) if control_mean_m is not None else None,
+            "bias_matched":           round(float(bias_m), 2) if bias_m is not None else None,
+            "pct_reduct":             round(float(pct_reduct), 1) if pct_reduct is not None else None,
+            "t_matched":              round(t_m_stat, 3) if t_m_stat is not None else None,
+            "p_matched":              round(p_m, 4) if p_m is not None else None,
         })
+
+    abs_bias_u = [abs(b["bias_unmatched"]) for b in balance]
+    abs_bias_m = [abs(b["bias_matched"]) for b in balance if b["bias_matched"] is not None]
+    balance_summary = {
+        "ps_r2":                round(float(logit_res.prsquared), 6),
+        "lr_chi2":              round(float(logit_res.llr), 4),
+        "lr_chi2_pvalue":       round(float(logit_res.llr_pvalue), 6),
+        "mean_bias_unmatched":   round(float(np.mean(abs_bias_u)), 1) if abs_bias_u else None,
+        "median_bias_unmatched": round(float(np.median(abs_bias_u)), 1) if abs_bias_u else None,
+        "mean_bias_matched":     round(float(np.mean(abs_bias_m)), 1) if abs_bias_m else None,
+        "median_bias_matched":   round(float(np.median(abs_bias_m)), 1) if abs_bias_m else None,
+    }
 
     # 共同支撑域
     t_min, t_max = treated["_pscore"].min(), treated["_pscore"].max()
@@ -1542,12 +1602,16 @@ def run_psm(
         "p_value":          round(p_value, 6) if p_value == p_value else None,
         "sig":              sig_stars(p_value) if p_value == p_value else "",
         "balance":          balance,
+        "balance_summary":  balance_summary,
         "pscore_pseudo_r2": round(float(logit_res.prsquared), 6),
         "notes": (
             f"倾向得分由 Logit({treatment_var} ~ {', '.join(covariates_final)}) 估计；"
             f"近邻匹配（k={n_neighbors}，有放回{'，caliper=' + str(caliper) if caliper is not None else ''}）"
             f"{cat_note}；ATT标准误为匹配后差值的简单标准误（非 Abadie-Imbens 修正方差），"
-            "对应 Stata psmatch2 的近似估计；标准化均值差（std_bias_pct）绝对值通常以 <10% 作为平衡性可接受的经验标准；"
-            f"{n_unmatched} 个处理组个体因超出 caliper 未匹配，{n_outside_support} 个处理组个体倾向得分超出共同支撑域"
+            "对应 Stata psmatch2 的近似估计；平衡性检验对照 Stata pstest 输出格式，分 Unmatched/Matched 两行展示"
+            "标准化均值差（%Bias）与组间均值t检验，Matched 行的对照组按匹配权重加权计算，"
+            "%Bias 绝对值通常以 <10% 作为平衡性可接受的经验标准；"
+            f"{n_unmatched} 个处理组个体因超出 caliper 未匹配，{n_outside_support} 个处理组个体倾向得分超出共同支撑域；"
+            "本结果对面板数据采用混合（pooled）匹配，未按截面分期匹配，详见 docs/DEBT.md"
         ),
     }
