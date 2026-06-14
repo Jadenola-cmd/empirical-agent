@@ -33,6 +33,8 @@
 
 > 2026-06-15（续）：实机QA `psm_did` 时发现并修复——TWFE/事件研究回归未把"匹配协变量"纳入控制变量（前端互斥逻辑导致用户选了匹配协变量后控制变量框无法重复选择，TWFE表里只有`_did`一项）；改为 `regression_controls = 匹配协变量∪控制变量`（去重）传入两处回归，匹配协变量自动同时作为回归控制变量。重新生成测试数据 `AI_Output/Claude/test_data_psm_did.csv`（50个体×10年，25个交错处理个体三波2018/2019/2020 + 25个从未处理个体，含动态效应与一处故意基期缺失），原根目录测试文件已移除。另发现清洗流程默认"删除缺失值行"会误删 `treat_time_var` 的"从未受处理"标记行，记入 `docs/DEBT.md`。
 
+> 2026-06-15（续2）：根据用户反馈优化大样本下的展示——页面"匹配映射表"改为只展示前20条并提示总条数（避免处理组个体上千时页面渲染不下）；`run_psm_did` 新增返回 `restored_panel`/`restored_panel_cols`（匹配并面板还原后的完整数据，含 `_treated_flag`/`_post`/`_did`），Excel导出新增"PSM-DID匹配面板数据"sheet供下载查看完整数据。`npx next build` 编译通过。
+
 ## 进行中
 
 - [ ] `did_robustness` 支持交错处理时点（`treat_time_var`），与 `did_event` 配置保持一致，详见 `docs/DEBT.md`

@@ -1866,6 +1866,14 @@ def run_psm_did(
     ).astype(float)
     restored["_did"] = restored["_treated_flag"] * restored["_post"]
 
+    # 匹配好并还原的面板数据，供前端导出（页面上的"匹配映射表"仅展示摘要，避免样本量大时无法渲染）
+    panel_cols = list(dict.fromkeys(
+        [entity_var, time_var, dep_var, treatment_var] + covariates + control_vars
+        + ["_treated_flag", "_post", "_did"]
+    ))
+    panel_cols = [c for c in panel_cols if c in restored.columns]
+    restored_panel = restored[panel_cols].astype(object).where(pd.notnull(restored[panel_cols]), None).to_dict(orient="records")
+
     # 匹配协变量在TWFE/事件研究回归中同时作为控制变量（PSM+回归调整的常见做法），
     # 与用户额外指定的"控制变量"取并集去重
     regression_controls = list(dict.fromkeys(covariates + control_vars))
@@ -1922,6 +1930,8 @@ def run_psm_did(
         "blocks":               blocks_result,
         "excluded":             excluded,
         "mapping":              mapping,
+        "restored_panel":       restored_panel,
+        "restored_panel_cols":  panel_cols,
         "balance":              balance,
         "balance_summary":      balance_extra,
         "twfe":                 twfe_result,

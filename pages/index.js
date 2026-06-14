@@ -446,6 +446,11 @@ function exportXlsx(analyzeResults, cleanedData) {
         }
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(esRows), "PSM-DID事件研究");
       }
+
+      if (pd2.restored_panel?.length) {
+        const panelWs = XLSX.utils.json_to_sheet(pd2.restored_panel, { header: pd2.restored_panel_cols });
+        XLSX.utils.book_append_sheet(wb, panelWs, "PSM-DID匹配面板数据");
+      }
     }
 
     XLSX.writeFile(wb, `实证分析_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -1058,7 +1063,9 @@ function PSMDIDResult({ data }) {
 
       {data.mapping?.length > 0 && (
         <>
-          <div className="tbl-title" style={{ marginTop: 10 }}>匹配映射表</div>
+          <div className="tbl-title" style={{ marginTop: 10 }}>
+            匹配映射表（仅展示前 {Math.min(20, data.mapping.length)} / {data.mapping.length} 条，完整匹配关系及还原后的面板数据请见 Excel 导出）
+          </div>
           <div className="tbl-scroll">
             <table className="acad-table reg-tbl">
               <thead><tr>
@@ -1068,7 +1075,7 @@ function PSMDIDResult({ data }) {
                 <th className="col-reg">匹配对照个体</th>
               </tr></thead>
               <tbody>
-                {data.mapping.map((m, i) => (
+                {data.mapping.slice(0, 20).map((m, i) => (
                   <tr key={i}>
                     <td className="col-var">{m.entity}</td>
                     <td className="col-reg">{m.baseline_year}</td>
