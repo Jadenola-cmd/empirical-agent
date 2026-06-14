@@ -37,9 +37,10 @@
 
 > 2026-06-15（续3）：`did_robustness` 支持交错处理时点（`treat_time_var`）+ 完善输出，按方案一次性实现：抽取公共函数 `_compute_post_treat` 供 `run_did_robustness`/`run_did_event_study` 共用；安慰剂检验交错模式下保留真实处理时点分布做permutation，剔除政策当期交错模式下改为剔除各处理组个体自身 `_rel_time==0` 观测；返回新增 `mode`/`n_treated_entities`/完整 `baseline_result`/`exclude_period_result`。前端新增"处理时间列（交错处理）"选择器（复用 `treatTimeVar`）、`PlaceboHistogram` SVG直方图（安慰剂系数分布+真实值竖线）、用 `RegressionTable` 展示基准/剔除政策当期完整回归对比；Excel导出补充模式与安慰剂分布原始数据。已用 `test_data_psm_did.csv` 验证同质/交错两种模式及未指定时点的报错提示，`npx next build` 编译通过。
 
+> 2026-06-15（续4）：实机QA `did_robustness` 交错模式（Railway测试环境）发现并修复两个问题——①"控制变量"选择器与"匹配协变量"（`indepVars`）互斥，`psm`/`psm_did` 选中时无法把同一变量同时选为控制变量，改为仅在 `needsPSMConfig` 时放开互斥；②安慰剂检验100次重复 `run_panel`（PanelOLS）在 Railway 环境CPU冲到2vCPU以上触发90秒超时熔断（本地约14秒，Railway更弱被放大），改为预计算双向固定效应去均值（`_two_way_demean`）+ 每次迭代仅做一次 `lstsq`，耗时降到约0.5秒，系数误差<1e-6。用户确认修复后正常，**`did_robustness` 交错模式QA通过**。
+
 ## 下次会话优先处理
 
-- [ ] 实机QA：`did_robustness` 交错模式（浏览器中配置 `treat_time_var`，检查安慰剂直方图、基准/剔除当期回归对比表展示是否正常）
 - [ ] 实机QA：`psm_did` 在浏览器中实际跑一遍（含同质/交错两种配置、激活码门控、Excel导出三个sheet展示是否正常）
 - [ ] 实机QA "02 变量配置"重排：覆盖单选每种分析类型 + 常见组合（PSM+DID、PSM+DID稳健性检验、调节+中介+异质性等），确认字段显隐与归属符合预期，再考虑提交PR/合并到main
 
