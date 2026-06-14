@@ -34,6 +34,31 @@ def _expand_categoricals(sub: pd.DataFrame, x_vars: List[str]) -> tuple:
     return sub, new_x, dummy_info
 
 
+def _two_way_demean(
+    values: np.ndarray,
+    entity_codes: np.ndarray,
+    time_codes: np.ndarray,
+    n_entities: int,
+    n_times: int,
+    n_iter: int = 10,
+) -> np.ndarray:
+    """双向（个体+时间）固定效应的迭代去均值变换（within transformation）。
+
+    对平衡面板等价于 x - x_i_bar - x_t_bar + x_bar 的闭式解；对非平衡面板通过
+    交替投影迭代收敛到同一结果（数值上等价于 PanelOLS entity_effects+time_effects
+    的去均值结果），用于在安慰剂检验中快速重复估计系数，避免每次重建 PanelOLS。
+    """
+    x = values.astype(float).copy()
+    for _ in range(n_iter):
+        entity_sum = np.bincount(entity_codes, weights=x, minlength=n_entities)
+        entity_cnt = np.bincount(entity_codes, minlength=n_entities)
+        x = x - (entity_sum / entity_cnt)[entity_codes]
+        time_sum = np.bincount(time_codes, weights=x, minlength=n_times)
+        time_cnt = np.bincount(time_codes, minlength=n_times)
+        x = x - (time_sum / time_cnt)[time_codes]
+    return x
+
+
 def run_descriptive(df: pd.DataFrame, numeric_cols: List[str]) -> Dict:
     result = []
     for col in numeric_cols:
@@ -658,6 +683,36 @@ def run_did_robustness(
     base_row = next(c for c in baseline["coefficients"] if c["variable"] == "_did")
     base_coef = base_row["coef"]
 
+    # 预计算双向固定效应去均值后的因变量与控制变量，安慰剂检验中重复估计时
+    # 只需对每次的 _placebo_did 做同样的去均值变换后求解一次最小二乘，
+    # 避免每次重建 PanelOLS（n_placebo 次 run_panel 在大数据上是主要耗时来源）。
+    sub_reg = sub.copy()
+    for col in [dep_var] + [c for c in control_vars if not pd.api.types.is_object_dtype(sub_reg[c])]:
+        sub_reg[col] = pd.to_numeric(sub_reg[col], errors="coerce")
+    sub_reg, control_vars_final, _ = _expand_categoricals(sub_reg, control_vars)
+    sub_reg = sub_reg.dropna(subset=list(dict.fromkeys([dep_var] + control_vars_final)))
+
+    entity_codes, _ = pd.factorize(sub_reg[entity_var])
+    time_codes, _ = pd.factorize(sub_reg[time_var])
+    n_ent_reg, n_time_reg = int(entity_codes.max()) + 1, int(time_codes.max()) + 1
+
+    y_tilde = _two_way_demean(sub_reg[dep_var].values, entity_codes, time_codes, n_ent_reg, n_time_reg)
+    X_controls_tilde = (
+        np.column_stack([
+            _two_way_demean(sub_reg[c].values, entity_codes, time_codes, n_ent_reg, n_time_reg)
+            for c in control_vars_final
+        ]) if control_vars_final else np.empty((len(sub_reg), 0))
+    )
+
+    def _placebo_coef_fast(placebo_did_full: pd.Series) -> Optional[float]:
+        placebo_vals = placebo_did_full.loc[sub_reg.index].values.astype(float)
+        placebo_tilde = _two_way_demean(placebo_vals, entity_codes, time_codes, n_ent_reg, n_time_reg)
+        if np.std(placebo_tilde) < 1e-10:
+            return None
+        X = np.column_stack([X_controls_tilde, placebo_tilde]) if X_controls_tilde.size else placebo_tilde.reshape(-1, 1)
+        coef, *_ = np.linalg.lstsq(X, y_tilde, rcond=None)
+        return float(coef[-1])
+
     # 1. 安慰剂检验
     placebo_coefs = []
     if mode == "staggered":
@@ -678,18 +733,10 @@ def run_did_robustness(
                 pseudo_post = (
                     (~pseudo_treat_time.isna()) & (time_numeric >= pseudo_treat_time)
                 ).astype(float)
-                sub["_placebo_did"] = (~pseudo_treat_time.isna()).astype(float) * pseudo_post
-                try:
-                    placebo_result = run_panel(
-                        sub, dep_var=dep_var, indep_vars=["_placebo_did"], control_vars=control_vars,
-                        entity_var=entity_var, time_var=time_var, model_type="fe",
-                        robust_se=robust_se, cluster_var=cluster_var, time_effects=True,
-                    )
-                    row = next(c for c in placebo_result["coefficients"] if c["variable"] == "_placebo_did")
-                    placebo_coefs.append(row["coef"])
-                except Exception:
-                    continue
-            sub = sub.drop(columns=["_placebo_did"], errors="ignore")
+                placebo_did_full = (~pseudo_treat_time.isna()).astype(float) * pseudo_post
+                coef = _placebo_coef_fast(placebo_did_full)
+                if coef is not None:
+                    placebo_coefs.append(coef)
     else:
         # 同质模式：保持处理组个体数量不变，随机重新分配"处理组"身份（_post 不变）
         ent_treat = sub.groupby(entity_var)[treatment_var].apply(lambda s: pd.to_numeric(s, errors="coerce").max())
@@ -701,18 +748,10 @@ def run_did_robustness(
             for _ in range(n_placebo):
                 placebo_treated_entities = set(rng.choice(all_entities, size=n_treated, replace=False))
                 placebo_treat_map = {e: (1.0 if e in placebo_treated_entities else 0.0) for e in all_entities}
-                sub["_placebo_did"] = sub[entity_var].map(placebo_treat_map) * sub["_post"]
-                try:
-                    placebo_result = run_panel(
-                        sub, dep_var=dep_var, indep_vars=["_placebo_did"], control_vars=control_vars,
-                        entity_var=entity_var, time_var=time_var, model_type="fe",
-                        robust_se=robust_se, cluster_var=cluster_var, time_effects=True,
-                    )
-                    row = next(c for c in placebo_result["coefficients"] if c["variable"] == "_placebo_did")
-                    placebo_coefs.append(row["coef"])
-                except Exception:
-                    continue
-            sub = sub.drop(columns=["_placebo_did"], errors="ignore")
+                placebo_did_full = sub[entity_var].map(placebo_treat_map) * sub["_post"]
+                coef = _placebo_coef_fast(placebo_did_full)
+                if coef is not None:
+                    placebo_coefs.append(coef)
 
     if placebo_coefs:
         placebo_arr = np.array(placebo_coefs)

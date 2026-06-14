@@ -26,6 +26,12 @@
 - 改为仅在 `needsPSMConfig`（即 `psm`/`psm_did` 选中）时放开该互斥（`needsPSMConfig || !indepVars.includes(c)`），其余分析类型（ols/moderation等"解释变量X"语义）维持原互斥，避免同一变量重复进入同一回归的 `all_x_vars` 造成重复列。
 - `npx next build` 编译通过。
 
+**性能修复：`did_robustness` 安慰剂检验 100 次重复 `run_panel`（PanelOLS）导致 Railway 测试环境 CPU 跑满 90 秒熔断**
+- 实机QA时发现：本地 500行/50个体数据，`did_robustness`（含 `control_vars`，`n_placebo=100`）单独勾选耗时约 14 秒，但在 Railway 测试环境（资源比本地弱很多）CPU 冲到 2vCPU 以上并触发 90 秒超时熔断；重启服务清空残留线程后单独重跑仍复现，确认是该分析类型自身计算量过大，而非线程残留（`docs/DEBT.md` 中"超时线程残留占满CPU"问题的另一诱因）。
+- 根因：每次安慰剂迭代都重新调用 `run_panel`→完整 PanelOLS（含分类变量展开、共线性秩检测、完整结果对象构建），100次开销线性放大。
+- 修复：`api/services/stats.py` 新增 `_two_way_demean`（双向固定效应迭代去均值，交替投影至收敛，平衡面板等价于 `x - x_i_bar - x_t_bar + x_bar` 闭式解，非平衡面板迭代10次收敛）。`run_did_robustness` 预计算去均值后的 `y`/`control_vars`（一次性），每次安慰剂迭代仅对 `_placebo_did` 做同样的去均值变换后求解一次最小二乘（`np.linalg.lstsq`），系数与原 PanelOLS 结果误差 < 1e-6，但单次迭代耗时从约 120-400ms 降到 <1ms；同质/交错两种模式的安慰剂循环均改用该快速路径。`baseline_result`/`exclude_period_result`（含SE/p值等完整统计量）仍用原 `run_panel`，不受影响。
+- 验证：本地 `n_placebo=100` 总耗时从约 14 秒降至约 0.4-0.7 秒（含/不含控制变量、同质/交错模式均验证），系数分布与旧实现逐项比对一致（差异量级 1e-7）；`npx next build` 编译通过。
+
 ---
 
 ## 2026-06-15
