@@ -353,6 +353,8 @@ function exportXlsx(analyzeResults, cleanedData) {
     if (r.did_robustness) {
       const dr = r.did_robustness;
       const rows = [["DID 稳健性检验"]];
+      rows.push(["模式", dr.mode === "staggered" ? "交错处理时点" : "同质处理时点"]);
+      if (dr.mode === "staggered") rows.push(["处理组个体数", dr.n_treated_entities]);
       rows.push([]);
       rows.push(["基准估计：_did 系数", `${dr.baseline_coef}（p=${dr.baseline_p_value}）`]);
       rows.push([]);
@@ -365,6 +367,11 @@ function exportXlsx(analyzeResults, cleanedData) {
           rows.push(["伪p值", pb.p_value]);
         }
         rows.push([pb.conclusion]);
+        if (pb.coefs?.length > 0) {
+          rows.push([]);
+          rows.push(["安慰剂系数分布（共" + pb.coefs.length + "次）"]);
+          rows.push(pb.coefs);
+        }
         rows.push([]);
       }
       const ex = dr.exclude_policy_period;
@@ -746,6 +753,61 @@ function EventStudyChart({ coefs, windowPre, windowPost }) {
         <line x1={1} x2={9} y1={56} y2={56} stroke="#888" strokeWidth={1} strokeDasharray="4,3" /><text x={14} y={60} fontSize={10} fill="#444">政策时点</text>
         <text x={0} y={76} fontSize={9} fill="#888">误差棒 = 95% CI</text>
       </g>
+    </svg>
+  );
+}
+
+function PlaceboHistogram({ coefs, baseline }) {
+  if (!coefs?.length) return null;
+  const W = 480, H = 200;
+  const pad = { top: 24, right: 20, bottom: 36, left: 40 };
+  const iW = W - pad.left - pad.right;
+  const iH = H - pad.top - pad.bottom;
+
+  const allVals = [...coefs, baseline];
+  const rawMin = Math.min(...allVals);
+  const rawMax = Math.max(...allVals);
+  const range = (rawMax - rawMin) || 1;
+  const xPad = range * 0.08;
+  const xMin = rawMin - xPad, xMax = rawMax + xPad;
+
+  const nBins = 12;
+  const binW = (xMax - xMin) / nBins;
+  const bins = new Array(nBins).fill(0);
+  coefs.forEach(c => {
+    let idx = Math.floor((c - xMin) / binW);
+    if (idx < 0) idx = 0;
+    if (idx >= nBins) idx = nBins - 1;
+    bins[idx]++;
+  });
+  const maxCount = Math.max(...bins, 1);
+
+  const xOf = v => pad.left + ((v - xMin) / (xMax - xMin)) * iW;
+  const yOf = c => pad.top + (1 - c / maxCount) * iH;
+  const barW = iW / nBins;
+  const fmtX = v => Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(3);
+  const baseX = xOf(baseline);
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: W, display: 'block', margin: '8px auto 0' }}>
+      {bins.map((cnt, i) => {
+        const x = pad.left + i * barW;
+        const y = yOf(cnt);
+        return <rect key={i} x={x + 1} y={y} width={Math.max(barW - 2, 1)} height={(H - pad.bottom) - y}
+          fill="#93c5fd" stroke="#60a5fa" strokeWidth={0.5} />;
+      })}
+      <line x1={baseX} x2={baseX} y1={pad.top} y2={H - pad.bottom}
+        stroke="#ef4444" strokeWidth={2} strokeDasharray="5,3" />
+      <text x={baseX} y={pad.top - 8} textAnchor="middle" fontSize={10} fill="#ef4444">真实估计值</text>
+
+      <line x1={pad.left} x2={W - pad.right} y1={H - pad.bottom} y2={H - pad.bottom} stroke="#555" strokeWidth={1} />
+      <text x={pad.left} y={H - pad.bottom + 16} textAnchor="start" fontSize={10} fill="#444">{fmtX(xMin)}</text>
+      <text x={W - pad.right} y={H - pad.bottom + 16} textAnchor="end" fontSize={10} fill="#444">{fmtX(xMax)}</text>
+      <text x={pad.left + iW / 2} y={H - 4} textAnchor="middle" fontSize={10} fill="#666">安慰剂随机重分配系数分布（_did）</text>
+
+      <line x1={pad.left} x2={pad.left} y1={pad.top} y2={H - pad.bottom} stroke="#555" strokeWidth={1} />
+      <text x={pad.left - 6} y={pad.top + 4} textAnchor="end" fontSize={10} fill="#444">{maxCount}</text>
+      <text x={pad.left - 6} y={H - pad.bottom} textAnchor="end" fontSize={10} fill="#444">0</text>
     </svg>
   );
 }
@@ -2455,13 +2517,26 @@ export default function Home() {
                     <div className="config-group-title">
                       {[analysisTypes.includes("did") && "DID", analysisTypes.includes("did_robustness") && "DID稳健性检验"].filter(Boolean).join(" / ")} 配置
                     </div>
-                    <div className="var-row">
-                      <span className="vl">政策时点 Policy Time <span className="vh">政策实施的年份，≥该值视为政策后</span></span>
-                      <input className="threshold-input" type="text" inputMode="numeric" value={policyTime}
-                        onChange={e => { if (/^-?\d*$/.test(e.target.value)) setPolicyTime(e.target.value); }}
-                        onFocus={e => e.target.select()}
-                        placeholder="如 2015" />
-                    </div>
+                    {!treatTimeVar && (
+                      <div className="var-row">
+                        <span className="vl">政策时点 Policy Time <span className="vh">政策实施的年份，≥该值视为政策后；如使用下方"处理时间列"（交错处理），可留空</span></span>
+                        <input className="threshold-input" type="text" inputMode="numeric" value={policyTime}
+                          onChange={e => { if (/^-?\d*$/.test(e.target.value)) setPolicyTime(e.target.value); }}
+                          onFocus={e => e.target.select()}
+                          placeholder="如 2015" />
+                      </div>
+                    )}
+                    {!(needsDIDEvent || needsPSMDID) && (
+                      <div className="var-row">
+                        <span className="vl">处理时间列（交错处理）<span className="vh">可选。各个体政策实施年份（整数），控制组留空即可，系统将空值识别为"从未受处理"；若不填则使用上方统一政策时点</span></span>
+                        <TagSelector options={cleanedCols.filter(c => c !== depVar && c !== treatmentVar)} selected={treatTimeVar ? [treatTimeVar] : []} onChange={v => setTreatTimeVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
+                        {treatTimeVar && (
+                          <div className="panel-tip" style={{marginTop:6,color:"#856404",background:"#fff3cd",padding:"6px 10px",borderRadius:4,fontSize:13}}>
+                            ⚠️ 数据清洗时请勿对「{treatTimeVar}」列填充缺失值——空值代表该个体从未受处理，是模型识别控制组的依据。
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
                 {(needsDIDEvent || needsPSMDID) && (
@@ -2666,41 +2741,45 @@ export default function Home() {
                       const dr = analyzeResults.results.did_robustness;
                       const pb = dr.placebo;
                       const ex = dr.exclude_policy_period;
+                      const modeLabel = dr.mode === "staggered" ? "交错处理时点" : "同质处理时点";
                       return (
-                        <div className="result-block">
-                          <div className="tbl-title">DID 稳健性检验</div>
-                          <div className="hausman-box">
-                            <strong>基准估计</strong>：_did 系数 = {dr.baseline_coef}{sigStars(dr.baseline_p_value)}（p={dr.baseline_p_value}）
-                          </div>
-                          {pb && (
-                            <div className={pb.p_value != null && pb.p_value < 0.1 ? "hausman-box" : "dropped-warn"} style={{ marginTop: 10 }}>
-                              <strong>安慰剂检验</strong>（随机重新分配处理组身份，重复 {pb.n_runs} 次）：
-                              {pb.p_value != null ? (
-                                <>随机系数均值={pb.mean}，标准差={pb.std}，伪p值={pb.p_value}</>
-                              ) : null}
-                              <br />{pb.conclusion}
+                        <>
+                          <div className="result-block">
+                            <div className="tbl-title">
+                              DID 稳健性检验
+                              <span className="mode-badge" style={{ marginLeft: 8, fontSize: 12, fontWeight: "normal", color: "#666", border: "1px solid #ddd", borderRadius: 4, padding: "1px 6px" }}>
+                                {modeLabel}{dr.mode === "staggered" && dr.n_treated_entities != null ? ` · 处理组个体数 ${dr.n_treated_entities}` : ""}
+                              </span>
                             </div>
+                            <div className="hausman-box">
+                              <strong>基准估计</strong>：_did 系数 = {dr.baseline_coef}{sigStars(dr.baseline_p_value)}（p={dr.baseline_p_value}）
+                            </div>
+                            {pb && (
+                              <div className={pb.p_value != null && pb.p_value < 0.1 ? "hausman-box" : "dropped-warn"} style={{ marginTop: 10 }}>
+                                <strong>安慰剂检验</strong>（随机重新分配处理组身份，重复 {pb.n_runs} 次）：
+                                {pb.p_value != null ? (
+                                  <>随机系数均值={pb.mean}，标准差={pb.std}，伪p值={pb.p_value}</>
+                                ) : null}
+                                <br />{pb.conclusion}
+                                {pb.coefs?.length > 0 && (
+                                  <PlaceboHistogram coefs={pb.coefs} baseline={dr.baseline_coef} />
+                                )}
+                              </div>
+                            )}
+                            {ex && (
+                              <div className="hausman-box" style={{ marginTop: 10 }}>
+                                <strong>剔除政策当期后</strong>：_did 系数 = {ex.coef?.toFixed(3)}{ex.sig}（t={ex.t_stat?.toFixed(2)}，N={ex.n?.toLocaleString()}），完整回归结果见下表
+                              </div>
+                            )}
+                            <div className="tbl-note">{dr.notes}</div>
+                          </div>
+                          {dr.baseline_result && (
+                            <RegressionTable data={dr.baseline_result} label="DID稳健性检验 · 基准估计（完整回归）" />
                           )}
-                          {ex && (
-                            <table className="acad-table reg-tbl" style={{ marginTop: 10 }}>
-                              <thead><tr>
-                                <th className="col-var">剔除政策当期后</th>
-                                <th className="col-reg">_did 系数</th>
-                              </tr></thead>
-                              <tbody>
-                                <tr>
-                                  <td className="col-var">{dr.dep_var}</td>
-                                  <td className="col-reg">
-                                    <div>{ex.coef?.toFixed(3)}<sup className="sig">{ex.sig}</sup></div>
-                                    <div className="tval">({ex.t_stat?.toFixed(2)})</div>
-                                  </td>
-                                </tr>
-                                <tr className="stat-row"><td className="col-var">N</td><td className="col-reg">{ex.n?.toLocaleString()}</td></tr>
-                              </tbody>
-                            </table>
+                          {dr.exclude_period_result && (
+                            <RegressionTable data={dr.exclude_period_result} label="DID稳健性检验 · 剔除政策当期后（完整回归）" />
                           )}
-                          <div className="tbl-note">{dr.notes}</div>
-                        </div>
+                        </>
                       );
                     })()}
                     {analyzeResults.results?.psm_did && (

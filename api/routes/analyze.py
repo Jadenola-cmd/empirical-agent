@@ -214,18 +214,29 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
         lines.append(f"reg {req.dep_var} {req.treatment_var} c.{req.time_var}##c.{req.treatment_var} if {req.time_var} < {pt}")
 
     if "did_robustness" in req.analysis_types and req.dep_var and req.entity_var and req.time_var and req.treatment_var:
-        pt = req.policy_time if req.policy_time is not None else "{政策年份}"
         all_x = ["did"] + (req.control_vars or [])
         se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
         lines.append("* DID稳健性检验：安慰剂检验（随机分配处理组，重复N次后比较真实系数与随机分布）：")
         lines.append(f"* 以下为单次示例，可循环执行并保存 _b[placebo_did] 后绘制分布图")
-        lines.append(f"gen post = ({req.time_var} >= {pt})")
+        if req.treat_time_var:
+            lines.append(f"* 交错处理时点（处理时间列：{req.treat_time_var}）：")
+            lines.append(f"gen post = ({req.time_var} >= {req.treat_time_var}) if !missing({req.treat_time_var})")
+            lines.append(f"replace post = 0 if missing({req.treat_time_var})")
+            lines.append(f"gen _rel_time = {req.time_var} - {req.treat_time_var}")
+        else:
+            pt = req.policy_time if req.policy_time is not None else "{政策年份}"
+            lines.append(f"gen post = ({req.time_var} >= {pt})")
         lines.append(f"bysort {req.entity_var}: gen _placebo_treat = ({req.entity_var} <= ({req.entity_var}的随机子集))  // 示例，需自定义随机分组逻辑")
         lines.append(f"gen placebo_did = _placebo_treat * post")
         lines.append(f"xtset {req.entity_var} {req.time_var}")
         lines.append(f"xtreg {req.dep_var} placebo_did {' '.join(req.control_vars or [])} i.{req.time_var}, fe{se_opt}")
-        lines.append("* 剔除政策当期重新估计：")
-        lines.append(f"xtreg {req.dep_var} {' '.join(all_x)} i.{req.time_var} if {req.time_var} != {pt}, fe{se_opt}")
+        if req.treat_time_var:
+            lines.append("* 剔除各处理组个体自身处理当期（相对处理时间=0）观测后重新估计：")
+            lines.append(f"xtreg {req.dep_var} {' '.join(all_x)} i.{req.time_var} if _rel_time != 0 | missing(_rel_time), fe{se_opt}")
+        else:
+            pt = req.policy_time if req.policy_time is not None else "{政策年份}"
+            lines.append("* 剔除政策当期重新估计：")
+            lines.append(f"xtreg {req.dep_var} {' '.join(all_x)} i.{req.time_var} if {req.time_var} != {pt}, fe{se_opt}")
 
     if "mediation" in req.analysis_types and req.dep_var and req.indep_vars and req.mediator_var:
         x, m = req.indep_vars[0], req.mediator_var
@@ -325,7 +336,7 @@ def run_analysis(req: AnalysisRequest):
                 keep.append(req.time_var)
         if any(t in req.analysis_types for t in ("did", "did_robustness", "psm")) and req.treatment_var and req.treatment_var not in keep:
             keep.append(req.treatment_var)
-        if any(t in req.analysis_types for t in ("did_event", "psm_did")):
+        if any(t in req.analysis_types for t in ("did_event", "psm_did", "did_robustness")):
             if req.treatment_var and req.treatment_var not in keep:
                 keep.append(req.treatment_var)
             if req.treat_time_var and req.treat_time_var not in keep:
@@ -541,8 +552,8 @@ def _run_all_analyses(req: "AnalysisRequest", df: pd.DataFrame, df_full: pd.Data
                     raise ValueError("DID稳健性检验需要指定 dep_var / entity_var / time_var")
                 if not req.treatment_var:
                     raise ValueError("DID稳健性检验需要指定处理组变量 treatment_var")
-                if req.policy_time is None:
-                    raise ValueError("DID稳健性检验需要指定政策时点 policy_time")
+                if req.treat_time_var is None and req.policy_time is None:
+                    raise ValueError("DID稳健性检验需要指定政策时点（同质处理填 policy_time，交错处理填 treat_time_var）")
                 results["did_robustness"] = run_did_robustness(
                     df,
                     dep_var=req.dep_var,
@@ -550,6 +561,7 @@ def _run_all_analyses(req: "AnalysisRequest", df: pd.DataFrame, df_full: pd.Data
                     time_var=req.time_var,
                     treatment_var=req.treatment_var,
                     policy_time=req.policy_time,
+                    treat_time_var=req.treat_time_var,
                     control_vars=req.control_vars or [],
                     robust_se=req.robust_se,
                     cluster_var=req.cluster_var,

@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 from scipy import stats
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 
 def sig_stars(p: float) -> str:
@@ -577,13 +577,40 @@ def run_did(
     return result
 
 
+def _compute_post_treat(
+    sub: pd.DataFrame,
+    time_numeric: pd.Series,
+    treatment_var: Optional[str],
+    policy_time: Optional[float],
+    treat_time_var: Optional[str],
+) -> Tuple[pd.Series, pd.Series]:
+    """计算每个观测对应个体的处理时点与"是否进入政策后"标记。
+
+    - treat_time_var 提供时（交错处理）：直接读取该列，NaN 表示该个体从未受处理（对照组）。
+    - 否则（同质处理）：处理组个体（treatment_var==1）统一使用 policy_time，对照组为 NaN。
+
+    返回 (treat_time_series, post_treat)，post_treat 对从未受处理个体恒为 0。
+    """
+    if treat_time_var is not None:
+        treat_time_series = pd.to_numeric(sub[treat_time_var], errors="coerce")
+    else:
+        treat = pd.to_numeric(sub[treatment_var], errors="coerce")
+        treat_time_series = treat.apply(lambda x: policy_time if x == 1 else np.nan)
+
+    post_treat = (
+        (~treat_time_series.isna()) & (time_numeric >= treat_time_series)
+    ).astype(float)
+    return treat_time_series, post_treat
+
+
 def run_did_robustness(
     df: pd.DataFrame,
     dep_var: str,
     entity_var: str,
     time_var: str,
     treatment_var: str,
-    policy_time: float,
+    policy_time: Optional[float] = None,
+    treat_time_var: Optional[str] = None,
     control_vars: List[str] = [],
     robust_se: bool = False,
     cluster_var: Optional[str] = None,
@@ -591,19 +618,37 @@ def run_did_robustness(
 ) -> Dict:
     """DID 稳健性检验包：安慰剂检验（随机分配处理组）+ 剔除政策当期重新估计。
 
-    安慰剂检验：保持处理组个体数量不变，随机重新分配"处理组"身份并重复估计 _did 系数，
+    支持同质处理（统一 policy_time）和交错处理（treat_time_var，各个体处理时点不同）两种模式，
+    与 run_did_event_study 共用 _compute_post_treat 判定处理时点。
+
+    安慰剂检验：
+    - 同质模式：保持处理组个体数量不变，随机重新分配"处理组"身份（_post 不变）后重复估计 _did 系数。
+    - 交错模式：保留真实处理时点的分布，随机抽取与处理组个体数相同的"伪处理组"个体，
+      将真实处理时点打散后逐一分配给它们，重新构造 _did 并重复估计。
     若真实系数的绝对值明显大于绝大多数随机分配下的系数（即伪 p 值较小），
     说明真实结果不太可能是偶然产生，增强因果识别可信度。对应 Stata 中常见的
     permutation/randomization inference 做法。
 
-    剔除政策当期：剔除 time_var == policy_time 的观测后重新估计，
+    剔除政策当期重新估计：
+    - 同质模式：剔除 time_var == policy_time 的观测后重新估计。
+    - 交错模式：剔除各处理组个体自身处理当期（相对处理时间 == 0）的观测后重新估计，
+      对照组（从未受处理个体）观测不受影响。
     用于排除政策当期数据异常（如政策宣布与实施同期混杂）对结果的影响。
     """
     sub = df.copy()
     time_numeric = pd.to_numeric(sub[time_var], errors="coerce")
-    treat = pd.to_numeric(sub[treatment_var], errors="coerce")
-    sub["_post"] = (time_numeric >= policy_time).astype(float)
-    sub["_did"] = treat * sub["_post"]
+    sub[entity_var] = sub[entity_var].astype(str).str.strip()
+
+    treat_time_series, post_treat = _compute_post_treat(
+        sub, time_numeric, treatment_var, policy_time, treat_time_var
+    )
+    is_treated = ~treat_time_series.isna()
+    if not is_treated.any():
+        raise ValueError("未识别到处理组个体（处理组变量/处理时间列均无有效处理标记），无法构建 DID 稳健性检验")
+
+    mode = "staggered" if treat_time_var is not None else "homogeneous"
+    sub["_post"] = post_treat
+    sub["_did"] = is_treated.astype(float) * sub["_post"]
 
     baseline = run_panel(
         sub, dep_var=dep_var, indep_vars=["_did"], control_vars=control_vars,
@@ -613,29 +658,61 @@ def run_did_robustness(
     base_row = next(c for c in baseline["coefficients"] if c["variable"] == "_did")
     base_coef = base_row["coef"]
 
-    # 1. 安慰剂检验：随机重新分配处理组身份（保持处理组个体数量不变），重复估计 _did 系数
-    ent_treat = sub.groupby(entity_var)[treatment_var].apply(lambda s: pd.to_numeric(s, errors="coerce").max())
-    all_entities = ent_treat.index.tolist()
-    n_treated = int((ent_treat > 0).sum())
-
+    # 1. 安慰剂检验
     placebo_coefs = []
-    if 0 < n_treated < len(all_entities):
-        rng = np.random.default_rng(42)
-        for _ in range(n_placebo):
-            placebo_treated_entities = set(rng.choice(all_entities, size=n_treated, replace=False))
-            placebo_treat_map = {e: (1.0 if e in placebo_treated_entities else 0.0) for e in all_entities}
-            sub["_placebo_did"] = sub[entity_var].map(placebo_treat_map) * sub["_post"]
-            try:
-                placebo_result = run_panel(
-                    sub, dep_var=dep_var, indep_vars=["_placebo_did"], control_vars=control_vars,
-                    entity_var=entity_var, time_var=time_var, model_type="fe",
-                    robust_se=robust_se, cluster_var=cluster_var, time_effects=True,
-                )
-                row = next(c for c in placebo_result["coefficients"] if c["variable"] == "_placebo_did")
-                placebo_coefs.append(row["coef"])
-            except Exception:
-                continue
-        sub = sub.drop(columns=["_placebo_did"], errors="ignore")
+    if mode == "staggered":
+        # 保留真实处理时点的分布：随机抽取 n_treated 个个体作为"伪处理组"，
+        # 将真实处理时点打散后逐一分配给它们，其余个体视为伪对照组（处理时点为 NaN）
+        ent_treat_time = sub.assign(_tt=treat_time_series).groupby(entity_var)["_tt"].first()
+        all_entities = ent_treat_time.index.tolist()
+        true_treat_times = ent_treat_time.dropna().values
+        n_treated = len(true_treat_times)
+
+        if 0 < n_treated < len(all_entities):
+            rng = np.random.default_rng(42)
+            for _ in range(n_placebo):
+                pseudo_entities = rng.choice(all_entities, size=n_treated, replace=False)
+                shuffled_times = rng.permutation(true_treat_times)
+                pseudo_map = dict(zip(pseudo_entities, shuffled_times))
+                pseudo_treat_time = sub[entity_var].map(pseudo_map)
+                pseudo_post = (
+                    (~pseudo_treat_time.isna()) & (time_numeric >= pseudo_treat_time)
+                ).astype(float)
+                sub["_placebo_did"] = (~pseudo_treat_time.isna()).astype(float) * pseudo_post
+                try:
+                    placebo_result = run_panel(
+                        sub, dep_var=dep_var, indep_vars=["_placebo_did"], control_vars=control_vars,
+                        entity_var=entity_var, time_var=time_var, model_type="fe",
+                        robust_se=robust_se, cluster_var=cluster_var, time_effects=True,
+                    )
+                    row = next(c for c in placebo_result["coefficients"] if c["variable"] == "_placebo_did")
+                    placebo_coefs.append(row["coef"])
+                except Exception:
+                    continue
+            sub = sub.drop(columns=["_placebo_did"], errors="ignore")
+    else:
+        # 同质模式：保持处理组个体数量不变，随机重新分配"处理组"身份（_post 不变）
+        ent_treat = sub.groupby(entity_var)[treatment_var].apply(lambda s: pd.to_numeric(s, errors="coerce").max())
+        all_entities = ent_treat.index.tolist()
+        n_treated = int((ent_treat > 0).sum())
+
+        if 0 < n_treated < len(all_entities):
+            rng = np.random.default_rng(42)
+            for _ in range(n_placebo):
+                placebo_treated_entities = set(rng.choice(all_entities, size=n_treated, replace=False))
+                placebo_treat_map = {e: (1.0 if e in placebo_treated_entities else 0.0) for e in all_entities}
+                sub["_placebo_did"] = sub[entity_var].map(placebo_treat_map) * sub["_post"]
+                try:
+                    placebo_result = run_panel(
+                        sub, dep_var=dep_var, indep_vars=["_placebo_did"], control_vars=control_vars,
+                        entity_var=entity_var, time_var=time_var, model_type="fe",
+                        robust_se=robust_se, cluster_var=cluster_var, time_effects=True,
+                    )
+                    row = next(c for c in placebo_result["coefficients"] if c["variable"] == "_placebo_did")
+                    placebo_coefs.append(row["coef"])
+                except Exception:
+                    continue
+            sub = sub.drop(columns=["_placebo_did"], errors="ignore")
 
     if placebo_coefs:
         placebo_arr = np.array(placebo_coefs)
@@ -650,6 +727,7 @@ def run_did_robustness(
                 f"真实 _did 系数（{round(base_coef, 4)}）的绝对值大于 {round((1 - placebo_p) * 100, 1)}% 的随机分配结果"
                 + ("，安慰剂检验通过，结果不太可能是偶然产生" if placebo_p < 0.1 else
                    "，但占比不足90%，安慰剂检验未通过，结果可能存在偶然性，需谨慎解释")
+                + ("；交错处理时点模式下，伪处理组的处理时点按真实处理时点分布随机重新分配" if mode == "staggered" else "")
             ),
         }
     else:
@@ -661,8 +739,14 @@ def run_did_robustness(
         }
 
     # 2. 剔除政策当期重新估计
+    if mode == "staggered":
+        rel_time = time_numeric - treat_time_series
+        sub_excl = sub[rel_time != 0].copy()
+    else:
+        sub_excl = sub[time_numeric != policy_time].copy()
+
     exclude_period_info = None
-    sub_excl = sub[time_numeric != policy_time].copy()
+    exclude_period_result = None
     try:
         if sub_excl[entity_var].nunique() >= 2 and sub_excl[time_var].nunique() >= 2:
             excl_result = run_panel(
@@ -679,22 +763,35 @@ def run_did_robustness(
                 "sig":       excl_row["sig"],
                 "n":         excl_result["n"],
             }
+            exclude_period_result = excl_result
     except Exception:
-        exclude_period_info = None
+        pass
 
     return {
-        "type":                 "did_robustness",
-        "dep_var":              dep_var,
-        "treatment_var":        treatment_var,
-        "policy_time":          policy_time,
-        "baseline_coef":        base_coef,
-        "baseline_p_value":     base_row["p_value"],
-        "placebo":              placebo_info,
+        "type":                  "did_robustness",
+        "mode":                  mode,
+        "dep_var":               dep_var,
+        "treatment_var":         treatment_var,
+        "policy_time":           policy_time,
+        "treat_time_var":        treat_time_var,
+        "n_treated_entities":    n_treated,
+        "baseline_coef":         base_coef,
+        "baseline_p_value":      base_row["p_value"],
+        "baseline_result":       baseline,
+        "placebo":               placebo_info,
         "exclude_policy_period": exclude_period_info,
+        "exclude_period_result": exclude_period_result,
         "notes": (
-            "安慰剂检验：保持处理组个体数量不变，随机重新分配处理组身份并重复估计，"
+            "安慰剂检验：" + ("交错处理时点模式下，" if mode == "staggered" else "")
+            + "保持处理组个体数量不变，随机重新分配处理组身份"
+            + ("（按真实处理时点分布随机重排）" if mode == "staggered" else "")
+            + "并重复估计，"
             "伪p值=随机系数绝对值≥真实系数绝对值的比例，越小说明结果越不可能偶然产生；"
-            "剔除政策当期：去除 policy_time 当期观测后重新估计 _did，用于排除政策宣布/实施同期混杂的影响。"
+            "剔除政策当期：" + (
+                "去除各处理组个体自身处理当期（相对处理时间=0）观测后重新估计 _did，对照组观测不受影响"
+                if mode == "staggered" else
+                "去除 policy_time 当期观测后重新估计 _did"
+            ) + "，用于排除政策宣布/实施同期混杂的影响。"
         ),
     }
 
@@ -722,14 +819,10 @@ def run_did_event_study(
     time_numeric = pd.to_numeric(sub[time_var], errors="coerce")
     sub[entity_var] = sub[entity_var].astype(str).str.strip()
 
-    # 计算各观测的处理开始时间
-    if treat_time_var is not None:
-        # 交错处理模式：直接从列读取，NaN 表示从未受处理
-        treat_time_series = pd.to_numeric(sub[treat_time_var], errors="coerce")
-    else:
-        # 同质处理模式：处理组统一使用 policy_time，对照组为 NaN
-        treat = pd.to_numeric(sub[treatment_var], errors="coerce")
-        treat_time_series = treat.apply(lambda x: policy_time if x == 1 else np.nan)
+    # 计算各观测的处理开始时间与"是否进入政策后"标记
+    treat_time_series, post_treat = _compute_post_treat(
+        sub, time_numeric, treatment_var, policy_time, treat_time_var
+    )
 
     # 计算相对时间（控制组/从未受处理组 rel_time 为 NaN）
     sub["_rel_time"] = time_numeric - treat_time_series
@@ -787,9 +880,7 @@ def run_did_event_study(
     result["event_coefs"] = event_coefs
 
     # 整体 ATT 估计：单一 _post_treat 虚拟变量的 TWFE 回归（对应 Stata: gen post_treat = treat*post; xtreg y post_treat controls i.year, fe）
-    sub["_post_treat"] = (
-        (~treat_time_series.isna()) & (time_numeric >= treat_time_series)
-    ).astype(float)
+    sub["_post_treat"] = post_treat
     try:
         overall_res = run_panel(
             sub,

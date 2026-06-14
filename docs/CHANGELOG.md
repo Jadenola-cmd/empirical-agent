@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-06-15（续）
+
+**新增：`did_robustness` 支持交错处理时点（`treat_time_var`），并完善输出**
+- 后端 `api/services/stats.py`：抽取公共函数 `_compute_post_treat`（根据 `treatment_var`+`policy_time` 或 `treat_time_var` 计算每个观测的处理时点与 `_post_treat`），`run_did_event_study` 复用该函数（行为不变）；`run_did_robustness` 新增 `treat_time_var: Optional[str] = None` 参数，`policy_time` 改为可选：
+  - 安慰剂检验：交错模式下保留真实处理时点的分布，随机抽取与处理组个体数相同的"伪处理组"个体，将真实处理时点打散后逐一分配给它们，重新构造 `_did` 并重复估计（同质模式逻辑不变）；
+  - 剔除政策当期：交错模式下改为剔除各处理组个体自身处理当期（相对处理时间 `_rel_time == 0`）的观测，对照组不受影响（同质模式仍剔除 `time == policy_time` 当期）；
+  - 返回值新增 `mode`（`"homogeneous"`/`"staggered"`）、`treat_time_var`、`n_treated_entities`，以及完整的 `baseline_result`/`exclude_period_result`（含全部变量系数，供前端渲染完整回归表）。
+  - 入口校验：未识别到处理组个体（`treat_time_var`/`treatment_var` 均无有效处理标记）时抛出明确错误。
+- 路由 `api/routes/analyze.py`：`did_robustness` 校验改为参照 `did_event`（`treat_time_var`/`policy_time` 二选一即可），新增 `treat_time_var` 传参；`keep` 列保留逻辑纳入 `did_robustness`；do文件片段同步区分同质/交错两种写法。
+- 前端 `pages/index.js`：
+  - "DID/DID稳健性检验 配置"区块新增"处理时间列（交错处理）"选择器（复用 `treatTimeVar` 状态，与 `did_event`/`psm_did` 共享），`policy_time` 在已填 `treatTimeVar` 时隐藏；
+  - 结果区新增模式标签（同质/交错处理时点 + 处理组个体数）；
+  - 新增 `PlaceboHistogram` 组件（纯 SVG，无新依赖）：将安慰剂检验 100 次重分配的 `_did` 系数分布画成直方图，叠加真实估计值竖线；
+  - "剔除政策当期"由迷你表格改为用 `RegressionTable` 渲染基准估计与剔除政策当期后的完整回归表（含全部控制变量系数），便于对比；
+  - Excel导出"DID稳健性检验"sheet新增模式/处理组个体数/安慰剂系数分布原始数据。
+- 已用 `test_data_psm_did.csv` 分别验证同质模式（`policy_time=2018`）与交错模式（`treat_time_var=treat_time`）均正常返回，以及未指定任一时点参数时报错提示正确；`npx next build` 编译通过。
+
+---
+
 ## 2026-06-15
 
 **新增**

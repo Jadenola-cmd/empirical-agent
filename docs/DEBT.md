@@ -6,9 +6,8 @@
 
 ## 后端
 
-**`did_robustness` 仅支持同质处理时点，与多时点DID事件研究（`did_event`）的交错时点设定不一致**
-2026-06-14 用户反馈：`run_did_robustness`（`api/services/stats.py:580`）内部固定用单一 `policy_time` 构造 `_post = (time >= policy_time)` 和 `_did = treat × _post`，安慰剂检验与剔除政策当期都基于这个同质处理假设。而 `did_event`（多时点事件研究）支持 `treat_time_var`（每个体各自的处理年份，交错处理）。当用户做的是多时点DID时，`did_robustness` 的配置与其设定不一致——前端"DID事件研究 配置"区块目前在 `treatTimeVar` 已填时甚至不展示 `policy_time` 输入框，但 `did_robustness` 仍要求一个统一 `policy_time`，导致用户配置时无法对应。
-**待办**：让 `run_did_robustness` 支持接收 `treat_time_var`，当提供时按个体异质处理时点构造 `_post`（`time >= 该个体的处理时点`，从未处理个体 `_post` 恒为0），安慰剂检验的随机重分配逻辑也需要同步调整为对每个个体随机赋一个处理时点（或维持"是否处理"随机但保留原个体的处理时点分布，需进一步设计）。前端"DID事件研究 配置"中 `treatTimeVar` 与 `policyTime` 的传参需同时喂给 `did_robustness`。
+**~~`did_robustness` 仅支持同质处理时点~~（已解决，2026-06-15）**
+2026-06-14 用户反馈的不一致问题已修复：`run_did_robustness` 新增 `treat_time_var` 参数，与 `_compute_post_treat`（新抽取的公共函数，`did_event_study` 同时复用）统一构造处理时点；安慰剂检验交错模式下保留真实处理时点分布做permutation，剔除政策当期交错模式下剔除各处理组个体自身 `_rel_time==0` 观测。前端配置区已统一支持 `treatTimeVar`/`policyTime` 共享传参。详见 `docs/CHANGELOG.md` 2026-06-15（续3）。
 
 **PSM 对面板数据采用"混合/池化"匹配，未按截面分期匹配（设计已确认，待实现）**
 2026-06-14 用户提问引出：`run_psm`（`api/services/stats.py:1417`）完全不使用 `entity_var`/`time_var`，把传入的数据当作一个普通横截面，将所有"个体×年份"观测一起做 Logit 估计倾向得分 + 近邻匹配（pooled/mixed matching）。
