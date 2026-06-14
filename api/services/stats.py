@@ -1414,95 +1414,79 @@ def run_pca(
     }
 
 
-def run_psm(
-    df: pd.DataFrame,
-    dep_var: str,
-    treatment_var: str,
-    covariates: List[str],
+def _psm_match_core(
+    treated: pd.DataFrame,
+    control: pd.DataFrame,
+    covariates_final: List[str],
     n_neighbors: int = 1,
     caliper: Optional[float] = None,
 ) -> Dict:
-    """倾向得分匹配（PSM）：Logit 估计倾向得分 + 近邻匹配（有放回）+ 平衡性检验。
+    """PSM 共享匹配核心：合并处理组与对照组样本，用 Logit 估计倾向得分，
+    对每个处理组个体在对照组中按倾向得分距离寻找最近的 n_neighbors 个个体（有放回），
+    caliper 指定最大允许距离，超过则不匹配。
 
-    流程：
-    1. 用 covariates 通过 Logit 估计处理组倾向得分 P(treatment=1 | X)
-    2. 对每个处理组个体，在对照组中按倾向得分距离寻找最近的 n_neighbors 个个体（有放回），
-       caliper 指定最大允许距离，超过则不匹配
-    3. ATT = 处理组个体 Y 与其匹配对照组 Y 均值之差的平均值，
-       显著性通过对这些差值做单样本 t 检验（H0: 均值=0）得到，
-       对应 Stata `psmatch2` 风格的简单匹配方差（非 Abadie-Imbens 修正方差，结果中已注明）
-    4. 平衡性检验：比较匹配前后处理组与对照组在各 covariate 上的标准化均值差（standardized bias）
+    供 run_psm（横截面/混合匹配）与 run_psm_did（按基期截面分block匹配）共用。
+    返回带 `_pscore` 列的 treated/control 副本、匹配掩码、对照组匹配权重、
+    每个处理组个体匹配到的对照组行位置列表（positional，对应 control 的行序）。
     """
-    cols_needed = list(dict.fromkeys([dep_var, treatment_var] + covariates))
-    sub = df[cols_needed].copy()
-    for col in cols_needed:
-        if not pd.api.types.is_object_dtype(sub[col]):
-            sub[col] = pd.to_numeric(sub[col], errors="coerce")
-
-    sub, covariates_final, dummy_info = _expand_categoricals(sub, covariates)
-    dropna_cols = list(dict.fromkeys([dep_var, treatment_var] + covariates_final))
-    sub = sub.dropna(subset=dropna_cols).reset_index(drop=True)
-
-    if len(sub) == 0:
-        raise ValueError("转换为数值后数据为空，请检查变量是否为数值类型")
-
-    treat = sub[treatment_var]
-    unique_treat = sorted(treat.unique().tolist())
-    if not set(unique_treat).issubset({0.0, 1.0}):
-        raise ValueError(f"PSM 要求处理组变量为二元变量（取值仅0/1），当前观测到的取值：{unique_treat}")
-
-    n_treated_total = int((treat == 1).sum())
-    n_control_total = int((treat == 0).sum())
-    if n_treated_total == 0 or n_control_total == 0:
-        raise ValueError("处理组和对照组必须均非空（treatment_var 需同时包含0和1）")
-
-    # 1. 估计倾向得分
-    X = sm.add_constant(sub[covariates_final], has_constant="add")
-    logit_res = sm.Logit(treat, X).fit(disp=0)
+    n_treated, n_control = len(treated), len(control)
+    combined_x = pd.concat(
+        [treated[covariates_final], control[covariates_final]], axis=0, ignore_index=True
+    )
+    treat_flag = pd.Series([1.0] * n_treated + [0.0] * n_control)
+    X = sm.add_constant(combined_x, has_constant="add")
+    logit_res = sm.Logit(treat_flag, X).fit(disp=0)
     pscore = logit_res.predict(X)
-    sub["_pscore"] = pscore
 
-    treated = sub[treat == 1].copy()
-    control = sub[treat == 0].copy()
+    treated = treated.copy()
+    control = control.copy()
+    treated["_pscore"] = pscore.iloc[:n_treated].to_numpy()
+    control["_pscore"] = pscore.iloc[n_treated:].to_numpy()
+
     control_pscores = control["_pscore"].to_numpy()
-    control_y = control[dep_var].to_numpy()
-
-    # 2 & 3. 近邻匹配（有放回）+ ATT
-    diffs = []
+    matched_treated_mask = np.zeros(n_treated, dtype=bool)
+    control_weight = np.zeros(n_control, dtype=float)
+    match_positions: List[List[int]] = []
     n_unmatched = 0
-    matched_treated_mask = np.zeros(len(treated), dtype=bool)
-    control_weight = np.zeros(len(control), dtype=float)
-    for pos, (_, row) in enumerate(treated.iterrows()):
-        dists = np.abs(control_pscores - row["_pscore"])
+    for pos in range(n_treated):
+        dists = np.abs(control_pscores - treated["_pscore"].iat[pos])
         if caliper is not None:
             within = dists <= caliper
             if not within.any():
                 n_unmatched += 1
+                match_positions.append([])
                 continue
             order = np.argsort(dists)
             order = [i for i in order if within[i]][:n_neighbors]
         else:
             order = np.argsort(dists)[:n_neighbors]
-        matched_y = control_y[order].mean()
-        diffs.append(row[dep_var] - matched_y)
+        match_positions.append(list(order))
         matched_treated_mask[pos] = True
         for j in order:
             control_weight[j] += 1.0 / len(order)
 
-    n_matched = len(diffs)
-    if n_matched == 0:
-        raise ValueError("没有处理组个体匹配到对照组（caliper 可能设置过小），请放宽 caliper 或检查数据")
+    return {
+        "treated":             treated,
+        "control":             control,
+        "matched_treated_mask": matched_treated_mask,
+        "control_weight":      control_weight,
+        "match_positions":     match_positions,
+        "n_unmatched":         n_unmatched,
+        "logit_res":           logit_res,
+    }
 
-    diffs_arr = np.array(diffs)
-    att = float(diffs_arr.mean())
-    if n_matched > 1:
-        t_stat, p_value = stats.ttest_1samp(diffs_arr, 0.0)
-        se = float(diffs_arr.std(ddof=1) / np.sqrt(n_matched))
-        t_stat, p_value = float(t_stat), float(p_value)
-    else:
-        se, t_stat, p_value = float("nan"), float("nan"), float("nan")
 
-    # 4. 平衡性检验：标准化均值差 + t检验，匹配前(Unmatched)/匹配后(Matched) 对照 Stata pstest 输出
+def _psm_balance_table(
+    treated: pd.DataFrame,
+    control: pd.DataFrame,
+    covariates_final: List[str],
+    matched_treated_mask: np.ndarray,
+    control_weight: np.ndarray,
+) -> tuple:
+    """构造对照 Stata pstest 格式的 Unmatched/Matched 两行平衡性表。
+    返回 (balance_list, balance_summary_partial)，partial 仅含匹配前后 Mean/Median |Bias|，
+    不含 ps_r2/lr_chi2（由调用方按各自的 Logit 结果补充，run_psm_did 可能存在多个block各自的Logit）。
+    """
     matched_weight_sum = float(control_weight.sum())
     n1_matched = int(matched_treated_mask.sum())
     balance = []
@@ -1560,14 +1544,100 @@ def run_psm(
 
     abs_bias_u = [abs(b["bias_unmatched"]) for b in balance]
     abs_bias_m = [abs(b["bias_matched"]) for b in balance if b["bias_matched"] is not None]
-    balance_summary = {
-        "ps_r2":                round(float(logit_res.prsquared), 6),
-        "lr_chi2":              round(float(logit_res.llr), 4),
-        "lr_chi2_pvalue":       round(float(logit_res.llr_pvalue), 6),
+    balance_extra = {
         "mean_bias_unmatched":   round(float(np.mean(abs_bias_u)), 1) if abs_bias_u else None,
         "median_bias_unmatched": round(float(np.median(abs_bias_u)), 1) if abs_bias_u else None,
         "mean_bias_matched":     round(float(np.mean(abs_bias_m)), 1) if abs_bias_m else None,
         "median_bias_matched":   round(float(np.median(abs_bias_m)), 1) if abs_bias_m else None,
+    }
+    return balance, balance_extra
+
+
+def run_psm(
+    df: pd.DataFrame,
+    dep_var: str,
+    treatment_var: str,
+    covariates: List[str],
+    n_neighbors: int = 1,
+    caliper: Optional[float] = None,
+) -> Dict:
+    """倾向得分匹配（PSM）：Logit 估计倾向得分 + 近邻匹配（有放回）+ 平衡性检验。
+
+    流程：
+    1. 用 covariates 通过 Logit 估计处理组倾向得分 P(treatment=1 | X)
+    2. 对每个处理组个体，在对照组中按倾向得分距离寻找最近的 n_neighbors 个个体（有放回），
+       caliper 指定最大允许距离，超过则不匹配
+    3. ATT = 处理组个体 Y 与其匹配对照组 Y 均值之差的平均值，
+       显著性通过对这些差值做单样本 t 检验（H0: 均值=0）得到，
+       对应 Stata `psmatch2` 风格的简单匹配方差（非 Abadie-Imbens 修正方差，结果中已注明）
+    4. 平衡性检验：比较匹配前后处理组与对照组在各 covariate 上的标准化均值差（standardized bias）
+    """
+    cols_needed = list(dict.fromkeys([dep_var, treatment_var] + covariates))
+    sub = df[cols_needed].copy()
+    for col in cols_needed:
+        if not pd.api.types.is_object_dtype(sub[col]):
+            sub[col] = pd.to_numeric(sub[col], errors="coerce")
+
+    sub, covariates_final, dummy_info = _expand_categoricals(sub, covariates)
+    dropna_cols = list(dict.fromkeys([dep_var, treatment_var] + covariates_final))
+    sub = sub.dropna(subset=dropna_cols).reset_index(drop=True)
+
+    if len(sub) == 0:
+        raise ValueError("转换为数值后数据为空，请检查变量是否为数值类型")
+
+    treat = sub[treatment_var]
+    unique_treat = sorted(treat.unique().tolist())
+    if not set(unique_treat).issubset({0.0, 1.0}):
+        raise ValueError(f"PSM 要求处理组变量为二元变量（取值仅0/1），当前观测到的取值：{unique_treat}")
+
+    n_treated_total = int((treat == 1).sum())
+    n_control_total = int((treat == 0).sum())
+    if n_treated_total == 0 or n_control_total == 0:
+        raise ValueError("处理组和对照组必须均非空（treatment_var 需同时包含0和1）")
+
+    treated = sub[treat == 1].reset_index(drop=True)
+    control = sub[treat == 0].reset_index(drop=True)
+
+    # 1 & 2. 估计倾向得分 + 近邻匹配（有放回）
+    match = _psm_match_core(treated, control, covariates_final, n_neighbors, caliper)
+    treated, control = match["treated"], match["control"]
+    matched_treated_mask = match["matched_treated_mask"]
+    control_weight = match["control_weight"]
+    n_unmatched = match["n_unmatched"]
+    logit_res = match["logit_res"]
+
+    # 3. ATT = 处理组个体 Y 与其匹配对照组 Y 均值之差的平均值
+    control_y = control[dep_var].to_numpy()
+    diffs = []
+    for pos in range(len(treated)):
+        order = match["match_positions"][pos]
+        if not order:
+            continue
+        matched_y = control_y[order].mean()
+        diffs.append(treated[dep_var].iat[pos] - matched_y)
+
+    n_matched = len(diffs)
+    if n_matched == 0:
+        raise ValueError("没有处理组个体匹配到对照组（caliper 可能设置过小），请放宽 caliper 或检查数据")
+
+    diffs_arr = np.array(diffs)
+    att = float(diffs_arr.mean())
+    if n_matched > 1:
+        t_stat, p_value = stats.ttest_1samp(diffs_arr, 0.0)
+        se = float(diffs_arr.std(ddof=1) / np.sqrt(n_matched))
+        t_stat, p_value = float(t_stat), float(p_value)
+    else:
+        se, t_stat, p_value = float("nan"), float("nan"), float("nan")
+
+    # 4. 平衡性检验：标准化均值差 + t检验，匹配前(Unmatched)/匹配后(Matched) 对照 Stata pstest 输出
+    balance, balance_extra = _psm_balance_table(
+        treated, control, covariates_final, matched_treated_mask, control_weight
+    )
+    balance_summary = {
+        "ps_r2":          round(float(logit_res.prsquared), 6),
+        "lr_chi2":        round(float(logit_res.llr), 4),
+        "lr_chi2_pvalue": round(float(logit_res.llr_pvalue), 6),
+        **balance_extra,
     }
 
     # 共同支撑域
@@ -1613,5 +1683,259 @@ def run_psm(
             "%Bias 绝对值通常以 <10% 作为平衡性可接受的经验标准；"
             f"{n_unmatched} 个处理组个体因超出 caliper 未匹配，{n_outside_support} 个处理组个体倾向得分超出共同支撑域；"
             "本结果对面板数据采用混合（pooled）匹配，未按截面分期匹配，详见 docs/DEBT.md"
+        ),
+    }
+
+
+def run_psm_did(
+    df: pd.DataFrame,
+    entity_var: str,
+    time_var: str,
+    dep_var: str,
+    treatment_var: str,
+    covariates: List[str],
+    treat_time_var: Optional[str] = None,
+    policy_time: Optional[float] = None,
+    n_neighbors: int = 1,
+    caliper: Optional[float] = None,
+    window_pre: int = 3,
+    window_post: int = 5,
+    control_vars: List[str] = [],
+    robust_se: bool = False,
+    cluster_var: Optional[str] = None,
+) -> Dict:
+    """PSM-DID 基期锁定匹配：基期截面PSM匹配 + 面板还原 + 双向固定效应DID + 事件研究。
+
+    解决 run_psm 对面板数据混合（pooled）匹配的伪重复问题（详见 docs/DEBT.md）。
+    支持同质处理时点（policy_time，所有处理组同一年）和交错处理时点
+    （treat_time_var，每个个体各自的处理年份，从未处理为空）两种模式。
+
+    流程：
+    1. 基期截面提取：每个处理组个体 baseline_year = 其处理时点 - 1，
+       不同 baseline_year 构成不同 block；每个block的截面 = 该block处理组个体在
+       baseline_year的观测 ∪ 所有从未处理个体在baseline_year的观测
+    2. 分block PSM匹配（复用 _psm_match_core）：caliper外未匹配的处理组个体直接剔除；
+       block内对照不要求全局唯一，跨block允许同一对照实体被复用
+    3. 面板还原：匹配成功的处理组实体 ∪ 被匹配到的对照实体，从原始全期面板筛选，
+       构造 _post / _did，做个体+时间双向固定效应回归（drop_absorbed=True）
+    4. 事件研究：调用 run_did_event_study，复用现有图表/表格组件
+    """
+    sub = df.copy()
+    sub[entity_var] = sub[entity_var].astype(str).str.strip()
+    sub[time_var] = pd.to_numeric(sub[time_var], errors="coerce")
+    for col in list(dict.fromkeys([dep_var, treatment_var] + covariates + control_vars)):
+        if col in sub.columns and not pd.api.types.is_object_dtype(sub[col]):
+            sub[col] = pd.to_numeric(sub[col], errors="coerce")
+    sub = sub.dropna(subset=[entity_var, time_var]).reset_index(drop=True)
+
+    # 1. 确定每个个体的处理时点（treat_time），NaN = 从未受处理
+    if treat_time_var is not None:
+        treat_time_numeric = pd.to_numeric(sub[treat_time_var], errors="coerce")
+        ent_treat_time = (
+            treat_time_numeric.groupby(sub[entity_var])
+            .apply(lambda s: s.dropna().iloc[0] if s.notna().any() else np.nan)
+        )
+        mode_desc = f"交错处理（处理时间列：{treat_time_var}）"
+    else:
+        if policy_time is None:
+            raise ValueError("PSM-DID 需要指定政策时点 policy_time，或交错处理时点列 treat_time_var")
+        ent_treat = sub.groupby(entity_var)[treatment_var].apply(
+            lambda s: pd.to_numeric(s, errors="coerce").max()
+        )
+        ent_treat_time = ent_treat.apply(lambda x: policy_time if x == 1 else np.nan)
+        mode_desc = f"同质处理（政策时点 {policy_time}）"
+
+    treated_entities = ent_treat_time.dropna()
+    if treated_entities.empty:
+        raise ValueError("未识别到处理组个体（treatment_var 全为0，或 treat_time_var 全为空）")
+    never_treated_entities = set(ent_treat_time[ent_treat_time.isna()].index.tolist())
+    if not never_treated_entities:
+        raise ValueError("未识别到从未受处理的个体，无法构建对照组")
+
+    # baseline_year = treat_time - 1，划分block
+    baseline_map = treated_entities - 1.0
+    baseline_years = sorted(baseline_map.unique().tolist())
+    block_entities = {
+        by: baseline_map[baseline_map == by].index.tolist() for by in baseline_years
+    }
+
+    # 在所有 baseline_year 截面上预先展开类别变量，保证各block协变量列一致
+    cols_needed = list(dict.fromkeys([entity_var, time_var, dep_var, treatment_var] + covariates))
+    pool = sub[sub[time_var].isin(baseline_years)][cols_needed].copy()
+    pool, covariates_final, dummy_info = _expand_categoricals(pool, covariates)
+    pool = pool.dropna(subset=covariates_final).reset_index(drop=True)
+
+    excluded: List[Dict] = []
+    mapping: List[Dict] = []
+    blocks_result: List[Dict] = []
+    matched_treated_entities: set = set()
+    matched_control_entities: set = set()
+    bal_treated_frames, bal_control_frames = [], []
+    bal_masks, bal_weights = [], []
+
+    for by in baseline_years:
+        block_treated_ents = block_entities[by]
+        treated_rows = pool[(pool[time_var] == by) & (pool[entity_var].isin(block_treated_ents))]
+        control_rows = pool[(pool[time_var] == by) & (pool[entity_var].isin(never_treated_entities))]
+
+        present = set(treated_rows[entity_var])
+        for e in block_treated_ents:
+            if e not in present:
+                excluded.append({"entity": e, "baseline_year": float(by), "reason": "基期无观测"})
+
+        if treated_rows.empty or control_rows.empty:
+            blocks_result.append({
+                "baseline_year":        float(by),
+                "n_treated_candidates": int(len(treated_rows)),
+                "n_control_candidates": int(len(control_rows)),
+                "n_matched":            0,
+                "n_unmatched":          int(len(treated_rows)),
+                "ps_r2":                None,
+            })
+            for e in present:
+                excluded.append({"entity": e, "baseline_year": float(by), "reason": "对照组候选为空"})
+            continue
+
+        treated_rows = treated_rows.reset_index(drop=True)
+        control_rows = control_rows.reset_index(drop=True)
+        try:
+            match = _psm_match_core(treated_rows, control_rows, covariates_final, n_neighbors, caliper)
+        except Exception as e:
+            blocks_result.append({
+                "baseline_year":        float(by),
+                "n_treated_candidates": int(len(treated_rows)),
+                "n_control_candidates": int(len(control_rows)),
+                "n_matched":            0,
+                "n_unmatched":          int(len(treated_rows)),
+                "ps_r2":                None,
+            })
+            for ent in treated_rows[entity_var]:
+                excluded.append({"entity": ent, "baseline_year": float(by), "reason": f"Logit估计失败：{str(e)}"})
+            continue
+
+        for pos in range(len(treated_rows)):
+            ent = treated_rows[entity_var].iat[pos]
+            if match["matched_treated_mask"][pos]:
+                matched_treated_entities.add(ent)
+                ctrl_positions = match["match_positions"][pos]
+                ctrl_entities = [control_rows[entity_var].iat[j] for j in ctrl_positions]
+                matched_control_entities.update(ctrl_entities)
+                mapping.append({
+                    "entity":          ent,
+                    "baseline_year":   float(by),
+                    "pscore":          round(float(match["treated"]["_pscore"].iat[pos]), 6),
+                    "matched_controls": ctrl_entities,
+                })
+            else:
+                excluded.append({"entity": ent, "baseline_year": float(by), "reason": "超出caliper未匹配"})
+
+        blocks_result.append({
+            "baseline_year":        float(by),
+            "n_treated_candidates": int(len(treated_rows)),
+            "n_control_candidates": int(len(control_rows)),
+            "n_matched":            int(match["matched_treated_mask"].sum()),
+            "n_unmatched":          int(match["n_unmatched"]),
+            "ps_r2":                round(float(match["logit_res"].prsquared), 6),
+        })
+
+        bal_treated_frames.append(match["treated"])
+        bal_control_frames.append(match["control"])
+        bal_masks.append(match["matched_treated_mask"])
+        bal_weights.append(match["control_weight"])
+
+    if not matched_treated_entities:
+        raise ValueError("所有处理组个体均未匹配成功，请放宽 caliper 或检查协变量选择")
+
+    # 2. 平衡性检验：跨block拼接（pstest两行式格式）
+    balance, balance_extra = _psm_balance_table(
+        pd.concat(bal_treated_frames, ignore_index=True),
+        pd.concat(bal_control_frames, ignore_index=True),
+        covariates_final,
+        np.concatenate(bal_masks),
+        np.concatenate(bal_weights),
+    )
+
+    # 3. 面板还原 + TWFE
+    final_entities = matched_treated_entities | matched_control_entities
+    restored = sub[sub[entity_var].isin(final_entities)].copy()
+    treat_time_map = {e: ent_treat_time[e] for e in matched_treated_entities}
+    restored["_treat_time"] = restored[entity_var].map(treat_time_map)
+    restored["_treated_flag"] = restored[entity_var].isin(matched_treated_entities).astype(float)
+    restored["_post"] = (
+        (~restored["_treat_time"].isna()) & (restored[time_var] >= restored["_treat_time"])
+    ).astype(float)
+    restored["_did"] = restored["_treated_flag"] * restored["_post"]
+
+    # 匹配协变量在TWFE/事件研究回归中同时作为控制变量（PSM+回归调整的常见做法），
+    # 与用户额外指定的"控制变量"取并集去重
+    regression_controls = list(dict.fromkeys(covariates + control_vars))
+
+    twfe_result = run_panel(
+        restored, dep_var=dep_var, indep_vars=["_did"], control_vars=regression_controls,
+        entity_var=entity_var, time_var=time_var, model_type="fe",
+        robust_se=robust_se, cluster_var=cluster_var, time_effects=True,
+    )
+
+    # 4. 事件研究（复用 run_did_event_study，本分析类型专用默认窗口 window_pre=3/window_post=5）
+    if treat_time_var is not None:
+        restored["_psm_did_treat_time"] = restored[entity_var].map(treat_time_map)
+        event_result = run_did_event_study(
+            restored, dep_var=dep_var, entity_var=entity_var, time_var=time_var,
+            treatment_var="_treated_flag", treat_time_var="_psm_did_treat_time",
+            window_pre=window_pre, window_post=window_post,
+            control_vars=regression_controls, robust_se=robust_se, cluster_var=cluster_var,
+        )
+    else:
+        event_result = run_did_event_study(
+            restored, dep_var=dep_var, entity_var=entity_var, time_var=time_var,
+            treatment_var="_treated_flag", policy_time=policy_time,
+            window_pre=window_pre, window_post=window_post,
+            control_vars=regression_controls, robust_se=robust_se, cluster_var=cluster_var,
+        )
+
+    n_excluded_missing_baseline = sum(1 for e in excluded if e["reason"] == "基期无观测")
+    n_excluded_caliper = sum(1 for e in excluded if e["reason"] == "超出caliper未匹配")
+    dummy_vars_flat = [c for cols in dummy_info.values() for c in cols]
+    cat_note = (
+        f"；{list(dummy_info.keys())} 已自动展开为虚拟变量（drop_first=True，对齐 Stata xi:）"
+        if dummy_info else ""
+    )
+
+    return {
+        "type":                 "psm_did",
+        "dep_var":              dep_var,
+        "treatment_var":        treatment_var,
+        "covariates":           covariates,
+        "categorical_vars":     list(dummy_info.keys()),
+        "dummy_vars":           dummy_vars_flat,
+        "n_neighbors":          n_neighbors,
+        "caliper":              caliper,
+        "window_pre":           window_pre,
+        "window_post":          window_post,
+        "mode":                 mode_desc,
+        "n_treated_total":      int(len(treated_entities)),
+        "n_matched_treated":    int(len(matched_treated_entities)),
+        "n_excluded_missing_baseline": int(n_excluded_missing_baseline),
+        "n_excluded_caliper":   int(n_excluded_caliper),
+        "n_control_used":       int(len(matched_control_entities)),
+        "n_final_entities":     int(len(final_entities)),
+        "blocks":               blocks_result,
+        "excluded":             excluded,
+        "mapping":              mapping,
+        "balance":              balance,
+        "balance_summary":      balance_extra,
+        "twfe":                 twfe_result,
+        "event_study":          event_result,
+        "notes": (
+            f"{mode_desc}；按各处理组个体的基期（处理时点-1）划分 {len(baseline_years)} 个block分别做PSM匹配"
+            f"（k={n_neighbors}，有放回{'，caliper=' + str(caliper) if caliper is not None else ''}）"
+            f"{cat_note}；{len(treated_entities)} 个处理组个体中 {len(matched_treated_entities)} 个匹配成功，"
+            f"{n_excluded_missing_baseline} 个因基期无观测剔除，{n_excluded_caliper} 个超出caliper未匹配；"
+            f"匹配后面板还原为 {len(final_entities)} 个实体（处理组{len(matched_treated_entities)}+对照组{len(matched_control_entities)}，"
+            "对照组实体允许跨block复用，不造成DID双重计数）；"
+            "TWFE回归（个体+时间双向固定效应，drop_absorbed=True）给出 _did 系数作为ATT估计；"
+            "匹配协变量同时作为TWFE/事件研究回归的控制变量（PSM+回归调整）；"
+            "平衡性检验对照 Stata pstest 输出格式，分 Unmatched/Matched 两行展示标准化均值差（%Bias）；"
+            f"事件研究窗口 [-{window_pre}, {window_post}]，以 t=-1 为基期。"
         ),
     }

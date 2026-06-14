@@ -4,10 +4,27 @@
 
 ---
 
+## 2026-06-15
+
+**新增**
+- PSM-DID 基期锁定匹配（新分析类型 `psm_did`）：按设计方案一次性实现，支持同质（`policy_time`）/交错（`treat_time_var`）处理时点统一处理。
+  - 后端 `api/services/stats.py`：抽取 `_psm_match_core`（Logit倾向得分 + 近邻匹配 + caliper筛选，供 `run_psm`/`run_psm_did` 共用）与 `_psm_balance_table`（pstest两行式平衡性表，供两者共用）；`run_psm` 重构为调用这两个共享函数，输出结构不变。新增 `run_psm_did`：按各处理组个体 `baseline_year = treat_time - 1` 分block截面，分别PSM匹配，汇总平衡性表，还原面板并调用 `run_panel`（双向FE）得到 `_did` 系数（ATT），再调用 `run_did_event_study` 输出事件研究（窗口默认前3后5，独立于 `did_event` 的3/3默认值）。
+  - 路由 `api/routes/analyze.py`：注册 `psm_did`，纳入 `RESTRICTED_ANALYSIS_TYPES`；新增do文件片段生成（`psmatch2`+`pstest`+`xtreg fe`示例）。
+  - 前端 `pages/index.js`：`ANALYSIS_REGISTRY`/`LOCKED_ANALYSIS_TYPES` 新增 `psm_did`（因果识别分类）；"02 变量配置"复用PSM配置块（合并为"PSM / PSM-DID 配置"）+ Treatment块 + DID事件研究配置块（合并为"DID事件研究 / PSM-DID 配置"）；勾选 `psm_did` 且未勾选 `did_event` 时自动将事件窗口"后"默认值改为5；抽出 `PSMBalanceTable` 组件供 `PSMTable` 与新增 `PSMDIDResult`（诊断摘要+分block表+平衡性表+匹配映射表）复用；结果区新增 `PSMDIDResult` + TWFE系数表 + 事件研究图表；Excel导出新增"PSM-DID诊断"/"PSM-DID TWFE"/"PSM-DID事件研究"三个sheet。
+  - 已用 `test_data_psm_did.csv` 验证：同质模式（policy_time=2021）与构造的交错模式（treat_time分两波2021/2022）均匹配成功并输出 `_did` 系数，`npx next build` 编译通过。
+
+**变更（实机QA中发现并修复）**
+- `run_psm_did` 的 TWFE/事件研究回归此前只把"控制变量"传入 `run_panel`/`run_did_event_study`，"匹配协变量"（`indep_vars`）不会出现在回归表里，与前端"匹配协变量已选中的列不能再选作控制变量"的互斥逻辑冲突，导致用户选了匹配协变量后TWFE表里只有 `_did` 一项。改为 `regression_controls = covariates + control_vars`（去重并集）传入TWFE与事件研究，即匹配协变量自动同时作为回归控制变量（PSM+回归调整的常见做法），`notes` 中补充说明。
+- 重新生成测试数据 `AI_Output/Claude/test_data_psm_did.csv`（50个体×10年=499行）：25个交错处理个体（2018/2019/2020三波）+ 25个从未处理个体，含动态处理效应与一处故意的基期缺失（firm=1缺2017年观测，用于验证剔除诊断）；原根目录下的 `test_data_psm_did.csv` 已移除（应放入 `.gitignore` 标记的 `AI_Output/` 而非项目根目录）。
+- 记录新发现的清洗流程坑到 `docs/DEBT.md`：默认"缺失值处理=删除行"会把 `treat_time_var` 中"从未受处理"的有意义空值整行删除，导致 `psm_did` 报错"未识别到从未受处理的个体"；当前的警示提示出现在清洗之后，为时已晚。
+
+---
+
 ## 2026-06-14
 
 **变更**
 - PSM 平衡性检验输出对照 Stata `pstest` 格式重做：`run_psm`（`api/services/stats.py`）匹配时追踪每个对照组观测的匹配权重，平衡性表按协变量拆为 Unmatched/Matched 两行，给出处理组均值、（按权重加权的）对照组均值、%Bias、组间t检验(t/p>|t|)，Matched 行新增 %Reduct|Bias|（偏差缩减比例）；新增 `balance_summary` 字段（Pseudo R²、LR χ²及p值、匹配前后 Mean/Median |Bias|）。前端 `PSMTable` 组件与 Excel 导出同步改为两行式表格展示。
+- 修复"政策时点 Policy Time"输入框输入年份会变成负数的bug（已实机验证）：`pages/index.js` 中两处 policyTime 输入框由 `type="number"` 改为 `type="text"` + `inputMode="numeric"`，onChange 用正则 `/^-?\d*$/` 校验。`type="number"` 在 Chrome 中聚焦时滚动鼠标滚轮会按 step 递增/递减数值（用户输入年份后滚动页面查看其他配置项，数值被滚轮悄悄改变），改为 text 输入后不再响应滚轮。
 
 ---
 

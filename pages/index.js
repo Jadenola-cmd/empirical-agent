@@ -378,6 +378,76 @@ function exportXlsx(analyzeResults, cleanedData) {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "DID稳健性检验");
     }
 
+    if (r.psm_did) {
+      const pd2 = r.psm_did;
+      const rows = [["PSM-DID 基期锁定匹配"]];
+      rows.push([]);
+      rows.push(["匹配模式", pd2.mode]);
+      rows.push(["处理组个体总数", pd2.n_treated_total]);
+      rows.push(["匹配成功处理组数", pd2.n_matched_treated]);
+      rows.push(["基期无观测剔除数", pd2.n_excluded_missing_baseline]);
+      rows.push(["超出caliper未匹配数", pd2.n_excluded_caliper]);
+      rows.push(["对照组使用数", pd2.n_control_used]);
+      rows.push(["面板还原后实体数", pd2.n_final_entities]);
+      if (pd2.blocks?.length) {
+        rows.push([]);
+        rows.push(["分Block诊断"]);
+        rows.push(["基期", "处理组候选", "对照组候选", "匹配成功", "未匹配", "Pseudo R²"]);
+        pd2.blocks.forEach(b => rows.push([b.baseline_year, b.n_treated_candidates, b.n_control_candidates, b.n_matched, b.n_unmatched, b.ps_r2 ?? ""]));
+      }
+      if (pd2.balance?.length) {
+        rows.push([]);
+        rows.push(["平衡性检验（基期截面，跨block合并）"]);
+        rows.push(["协变量", "样本", "处理组均值", "对照组均值", "%Bias", "%Reduct|Bias|", "t", "p>|t|"]);
+        pd2.balance.forEach(b => {
+          rows.push([b.variable, "Unmatched", b.treated_mean_unmatched, b.control_mean_unmatched, b.bias_unmatched, "", b.t_unmatched ?? "", b.p_unmatched ?? ""]);
+          rows.push(["", "Matched", b.treated_mean_matched ?? "", b.control_mean_matched ?? "", b.bias_matched ?? "", b.pct_reduct ?? "", b.t_matched ?? "", b.p_matched ?? ""]);
+        });
+      }
+      if (pd2.balance_summary) {
+        const bs = pd2.balance_summary;
+        rows.push([]);
+        rows.push(["Mean |Bias|（匹配前→后）", `${bs.mean_bias_unmatched} → ${bs.mean_bias_matched ?? "—"}`]);
+        rows.push(["Median |Bias|（匹配前→后）", `${bs.median_bias_unmatched} → ${bs.median_bias_matched ?? "—"}`]);
+      }
+      if (pd2.mapping?.length) {
+        rows.push([]);
+        rows.push(["匹配映射表"]);
+        rows.push(["处理组个体", "基期", "倾向得分", "匹配对照个体"]);
+        pd2.mapping.forEach(m => rows.push([m.entity, m.baseline_year, m.pscore, (m.matched_controls || []).join(", ")]));
+      }
+      rows.push([]);
+      rows.push([pd2.notes || ""]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "PSM-DID诊断");
+
+      const twfeWs = buildRegSheet(pd2.twfe, "PSM-DID 双向固定效应估计（_did 系数即 ATT）");
+      if (twfeWs) XLSX.utils.book_append_sheet(wb, twfeWs, "PSM-DID TWFE");
+
+      if (pd2.event_study?.event_coefs?.length) {
+        const es = pd2.event_study;
+        const esRows = [["PSM-DID 事件研究系数（基期 t=−1）"]];
+        esRows.push([]);
+        esRows.push(["相对期", "系数", "标准误", "p值", "95% CI 下界", "95% CI 上界", "显著性"]);
+        es.event_coefs.forEach(ec => {
+          const label = ec.period === -1 ? "t=−1（基期）" : ec.period > 0 ? `t=+${ec.period}` : `t=${ec.period}`;
+          esRows.push([
+            label,
+            ec.is_base ? 0 : ec.coef?.toFixed(4),
+            ec.is_base ? "—" : ec.se?.toFixed(4),
+            ec.p_value != null ? ec.p_value?.toFixed(3) : "—",
+            ec.is_base ? "—" : ec.ci_low?.toFixed(4),
+            ec.is_base ? "—" : ec.ci_high?.toFixed(4),
+            ec.sig || (ec.is_base ? "（归零）" : "")
+          ]);
+        });
+        if (es.parallel_trends_event) {
+          esRows.push([]);
+          esRows.push(["平行趋势检验", es.parallel_trends_event.conclusion]);
+        }
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(esRows), "PSM-DID事件研究");
+      }
+    }
+
     XLSX.writeFile(wb, `实证分析_${new Date().toISOString().slice(0, 10)}.xlsx`);
   });
 }
@@ -551,7 +621,7 @@ function CorrelationTable({ data }) {
 
 // 需激活码解锁的高级分析类型（与后端 api/routes/analyze.py 的 RESTRICTED_ANALYSIS_TYPES 保持一致）
 // 范围：本次新增的高级功能（PSM/DID稳健性检验/Probit/Logit）；已上线的免费功能不纳入锁定
-const LOCKED_ANALYSIS_TYPES = ["psm", "did_robustness", "probit", "logit"];
+const LOCKED_ANALYSIS_TYPES = ["psm", "did_robustness", "probit", "logit", "psm_did"];
 
 // ─── 分析方法注册表 ───────────────────────────────────
 // 新增一种分析方法：在此追加一条配置即可，卡片分组、勾选逻辑均由它驱动，
@@ -574,6 +644,7 @@ const ANALYSIS_REGISTRY = [
   { type: "heterogeneity", icon: "🧬", title: "异质性分析",   desc: "分组回归对比", category: "稳健性检验" },
   { type: "did_robustness", icon: "🛡️", title: "DID稳健性检验", desc: "安慰剂检验 · 剔除政策当期重估", category: "稳健性检验" },
   { type: "psm",           icon: "🎯", title: "倾向得分匹配 PSM", desc: "Logit倾向得分 · 近邻匹配 + 平衡性检验", category: "因果识别" },
+  { type: "psm_did",       icon: "🧷", title: "PSM-DID 基期锁定匹配", desc: "基期PSM匹配 + 双向FE-DID + 事件研究", category: "因果识别" },
   { type: "pca",           icon: "🧮", title: "主成分分析 PCA", desc: "降维 · 载荷与方差贡献率", category: "数据探索" },
 ];
 
@@ -861,6 +932,60 @@ function MarginalEffectsTable({ data }) {
   );
 }
 
+function PSMBalanceTable({ balance, balanceSummary, showPsR2 = true }) {
+  if (!balance?.length) return null;
+  return (
+    <>
+      <div className="tbl-scroll">
+        <table className="acad-table reg-tbl" style={{ marginTop: 10 }}>
+          <thead><tr>
+            <th className="col-var">协变量</th>
+            <th className="col-reg">样本</th>
+            <th className="col-reg">处理组均值</th>
+            <th className="col-reg">对照组均值</th>
+            <th className="col-reg">%Bias</th>
+            <th className="col-reg">%Reduct|Bias|</th>
+            <th className="col-reg">t</th>
+            <th className="col-reg">p&gt;|t|</th>
+          </tr></thead>
+          <tbody>
+            {balance.map((b, i) => (
+              <React.Fragment key={i}>
+                <tr>
+                  <td className="col-var" rowSpan={2}>{b.variable}</td>
+                  <td className="col-reg">Unmatched</td>
+                  <td className="col-reg">{b.treated_mean_unmatched}</td>
+                  <td className="col-reg">{b.control_mean_unmatched}</td>
+                  <td className="col-reg">{b.bias_unmatched}</td>
+                  <td className="col-reg">—</td>
+                  <td className="col-reg">{b.t_unmatched ?? "—"}</td>
+                  <td className="col-reg">{b.p_unmatched ?? "—"}</td>
+                </tr>
+                <tr className="dummy-coef-row">
+                  <td className="col-reg">Matched</td>
+                  <td className="col-reg">{b.treated_mean_matched ?? "—"}</td>
+                  <td className="col-reg">{b.control_mean_matched ?? "—"}</td>
+                  <td className="col-reg">{b.bias_matched ?? "—"}{Math.abs(b.bias_matched ?? 0) >= 10 ? " ⚠️" : ""}</td>
+                  <td className="col-reg">{b.pct_reduct ?? "—"}</td>
+                  <td className="col-reg">{b.t_matched ?? "—"}</td>
+                  <td className="col-reg">{b.p_matched ?? "—"}</td>
+                </tr>
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {balanceSummary && (
+        <div className="tbl-note">
+          {showPsR2 && <>Pseudo R² = {balanceSummary.ps_r2}　LR χ² = {balanceSummary.lr_chi2}（p = {balanceSummary.lr_chi2_pvalue}）<br /></>}
+          Mean |Bias|: {balanceSummary.mean_bias_unmatched} → {balanceSummary.mean_bias_matched ?? "—"}
+          Median |Bias|: {balanceSummary.median_bias_unmatched} → {balanceSummary.median_bias_matched ?? "—"}
+        </div>
+      )}
+    </>
+  );
+}
+
 function PSMTable({ data }) {
   if (!data) return null;
   return (
@@ -888,53 +1013,73 @@ function PSMTable({ data }) {
           <tr className="stat-row"><td className="col-var">超出共同支撑域</td><td className="col-reg">{data.n_outside_support?.toLocaleString()}</td></tr>
         </tbody>
       </table>
-      {data.balance?.length > 0 && (
-        <div className="tbl-scroll">
-          <table className="acad-table reg-tbl" style={{ marginTop: 10 }}>
-            <thead><tr>
-              <th className="col-var">协变量</th>
-              <th className="col-reg">样本</th>
-              <th className="col-reg">处理组均值</th>
-              <th className="col-reg">对照组均值</th>
-              <th className="col-reg">%Bias</th>
-              <th className="col-reg">%Reduct|Bias|</th>
-              <th className="col-reg">t</th>
-              <th className="col-reg">p&gt;|t|</th>
-            </tr></thead>
-            <tbody>
-              {data.balance.map((b, i) => (
-                <React.Fragment key={i}>
-                  <tr>
-                    <td className="col-var" rowSpan={2}>{b.variable}</td>
-                    <td className="col-reg">Unmatched</td>
-                    <td className="col-reg">{b.treated_mean_unmatched}</td>
-                    <td className="col-reg">{b.control_mean_unmatched}</td>
-                    <td className="col-reg">{b.bias_unmatched}</td>
-                    <td className="col-reg">—</td>
-                    <td className="col-reg">{b.t_unmatched ?? "—"}</td>
-                    <td className="col-reg">{b.p_unmatched ?? "—"}</td>
+      <PSMBalanceTable balance={data.balance} balanceSummary={data.balance_summary} />
+      <div className="tbl-note">{data.notes}</div>
+    </div>
+  );
+}
+
+function PSMDIDResult({ data }) {
+  if (!data) return null;
+  return (
+    <div className="result-block">
+      <div className="rb-title">PSM-DID 基期锁定匹配</div>
+      <div className="rb-meta">
+        {data.mode}　处理组个体 {data.n_treated_total} 个，匹配成功 {data.n_matched_treated} 个
+        （基期无观测剔除 {data.n_excluded_missing_baseline} 个，超出caliper未匹配 {data.n_excluded_caliper} 个）
+        　对照组使用 {data.n_control_used} 个　面板还原后共 {data.n_final_entities} 个实体
+      </div>
+
+      <table className="acad-table reg-tbl" style={{ marginTop: 10 }}>
+        <thead><tr>
+          <th className="col-var">基期（Baseline Year）</th>
+          <th className="col-reg">处理组候选</th>
+          <th className="col-reg">对照组候选</th>
+          <th className="col-reg">匹配成功</th>
+          <th className="col-reg">未匹配</th>
+          <th className="col-reg">Pseudo R²</th>
+        </tr></thead>
+        <tbody>
+          {data.blocks?.map((b, i) => (
+            <tr key={i}>
+              <td className="col-var">{b.baseline_year}</td>
+              <td className="col-reg">{b.n_treated_candidates}</td>
+              <td className="col-reg">{b.n_control_candidates}</td>
+              <td className="col-reg">{b.n_matched}</td>
+              <td className="col-reg">{b.n_unmatched}</td>
+              <td className="col-reg">{b.ps_r2 ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="tbl-title" style={{ marginTop: 10 }}>平衡性检验（基期截面，跨block合并）</div>
+      <PSMBalanceTable balance={data.balance} balanceSummary={data.balance_summary} showPsR2={false} />
+
+      {data.mapping?.length > 0 && (
+        <>
+          <div className="tbl-title" style={{ marginTop: 10 }}>匹配映射表</div>
+          <div className="tbl-scroll">
+            <table className="acad-table reg-tbl">
+              <thead><tr>
+                <th className="col-var">处理组个体</th>
+                <th className="col-reg">基期</th>
+                <th className="col-reg">倾向得分</th>
+                <th className="col-reg">匹配对照个体</th>
+              </tr></thead>
+              <tbody>
+                {data.mapping.map((m, i) => (
+                  <tr key={i}>
+                    <td className="col-var">{m.entity}</td>
+                    <td className="col-reg">{m.baseline_year}</td>
+                    <td className="col-reg">{m.pscore}</td>
+                    <td className="col-reg">{m.matched_controls.join(", ")}</td>
                   </tr>
-                  <tr className="dummy-coef-row">
-                    <td className="col-reg">Matched</td>
-                    <td className="col-reg">{b.treated_mean_matched ?? "—"}</td>
-                    <td className="col-reg">{b.control_mean_matched ?? "—"}</td>
-                    <td className="col-reg">{b.bias_matched ?? "—"}{Math.abs(b.bias_matched ?? 0) >= 10 ? " ⚠️" : ""}</td>
-                    <td className="col-reg">{b.pct_reduct ?? "—"}</td>
-                    <td className="col-reg">{b.t_matched ?? "—"}</td>
-                    <td className="col-reg">{b.p_matched ?? "—"}</td>
-                  </tr>
-                </React.Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {data.balance_summary && (
-        <div className="tbl-note">
-          Pseudo R² = {data.balance_summary.ps_r2}　LR χ² = {data.balance_summary.lr_chi2}（p = {data.balance_summary.lr_chi2_pvalue}）
-          Mean |Bias|: {data.balance_summary.mean_bias_unmatched} → {data.balance_summary.mean_bias_matched ?? "—"}
-          Median |Bias|: {data.balance_summary.median_bias_unmatched} → {data.balance_summary.median_bias_matched ?? "—"}
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
       <div className="tbl-note">{data.notes}</div>
     </div>
@@ -1755,7 +1900,7 @@ export default function Home() {
         cluster_var: clusterVar || null,
         moderator_var: moderatorVar || null,
         treatment_var: treatmentVar || null,
-        policy_time: policyTime === "" ? null : policyTime,
+        policy_time: policyTime === "" ? null : Number(policyTime),
         treat_time_var: treatTimeVar || null,
         window_pre: windowPre,
         window_post: windowPost,
@@ -1816,9 +1961,9 @@ export default function Home() {
   const uniqueCols = [...new Set(allCols)];
   const uniqueMappedCols = [...new Set(mappedCols)];
   const cleanedCols = cleanedData?.columns || [];
-  const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did", "did_robustness", "did_event"].includes(t));
-  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "did", "did_event", "did_robustness", "heterogeneity", "iv", "psm"].includes(t));
-  const needsSE = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "did", "did_event", "did_robustness", "heterogeneity", "iv"].includes(t));
+  const needsPanel = analysisTypes.some(t => ["panel_fe", "panel_re", "panel_balance", "did", "did_robustness", "did_event", "psm_did"].includes(t));
+  const needsReg = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "did", "did_event", "did_robustness", "heterogeneity", "iv", "psm", "psm_did"].includes(t));
+  const needsSE = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "did", "did_event", "did_robustness", "heterogeneity", "iv", "psm_did"].includes(t));
   const needsModeration = analysisTypes.includes("moderation");
   const needsMediation = analysisTypes.includes("mediation");
   const needsDID = analysisTypes.some(t => t === "did" || t === "did_robustness");
@@ -1826,8 +1971,10 @@ export default function Home() {
   const needsHeterogeneity = analysisTypes.includes("heterogeneity");
   const needsIV = analysisTypes.includes("iv");
   const needsPCA = analysisTypes.includes("pca");
-  const needsIndepVars = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "heterogeneity", "psm"].includes(t));
+  const needsIndepVars = analysisTypes.some(t => ["ols", "panel_fe", "panel_re", "probit", "logit", "moderation", "mediation", "heterogeneity", "psm", "psm_did"].includes(t));
   const needsPSM = analysisTypes.includes("psm");
+  const needsPSMDID = analysisTypes.includes("psm_did");
+  const needsPSMConfig = needsPSM || needsPSMDID;
   const sectionNum = (base) => filePreviews.length > 1 ? base : base - 1;
 
   return (
@@ -2127,9 +2274,12 @@ export default function Home() {
                         return (
                           <div key={card.type}
                             className={`acard ${analysisTypes.includes(card.type) ? "active" : ""} ${isLocked ? "locked" : ""}`}
-                            onClick={() => isLocked ? openUnlockModal() : setAnalysisTypes(prev =>
-                              prev.includes(card.type) ? prev.filter(t => t !== card.type) : [...prev, card.type]
-                            )}>
+                            onClick={() => isLocked ? openUnlockModal() : setAnalysisTypes(prev => {
+                              if (card.type === "psm_did" && !prev.includes("psm_did") && !prev.includes("did_event") && windowPost === 3) {
+                                setWindowPost(5);
+                              }
+                              return prev.includes(card.type) ? prev.filter(t => t !== card.type) : [...prev, card.type];
+                            })}>
                             {isLocked && <div className="lock-badge">🔒</div>}
                             <div className="ci">{card.icon}</div>
                             <div className="ct">{card.title}</div>
@@ -2171,11 +2321,11 @@ export default function Home() {
                     {needsIndepVars && (
                       <div className="var-row">
                         <span className="vl">
-                          {needsPSM ? "匹配协变量" : "解释变量 X"}
+                          {needsPSMConfig ? "匹配协变量" : "解释变量 X"}
                           {needsModeration && needsMediation && <span className="vh">调节/中介效应分析均取第一个选中的变量作为 X</span>}
                           {needsModeration && !needsMediation && <span className="vh">调节效应分析取第一个选中的变量作为 X</span>}
                           {!needsModeration && needsMediation && <span className="vh">中介效应分析取第一个选中的变量作为 X</span>}
-                          {needsPSM && <span className="vh">用于估计倾向得分的协变量（与下方控制变量共同构成 Logit 的解释变量）</span>}
+                          {needsPSMConfig && <span className="vh">用于估计倾向得分的协变量（与下方控制变量共同构成 Logit 的解释变量）</span>}
                         </span>
                         <TagSelector options={cleanedCols.filter(c => c !== depVar && c !== treatmentVar)} selected={indepVars} onChange={setIndepVars} dtypes={cleanedData?.dtypes} />
                       </div>
@@ -2208,18 +2358,18 @@ export default function Home() {
                     )}
                   </div>
                 )}
-                {(needsPSM || needsDID || needsDIDEvent) && (
+                {(needsPSM || needsDID || needsDIDEvent || needsPSMDID) && (
                   <div className="config-group">
                     <div className="config-group-title">处理组变量 Treatment</div>
                     <div className="var-row">
                       <span className="vl">
                         取值0/1，标识个体是否属于处理组/接受处理
-                        <span className="vh">用于：{[needsPSM && "PSM", needsDID && "DID/DID稳健性检验", needsDIDEvent && "DID事件研究"].filter(Boolean).join("、")}</span>
+                        <span className="vh">用于：{[needsPSM && "PSM", needsDID && "DID/DID稳健性检验", needsDIDEvent && "DID事件研究", needsPSMDID && "PSM-DID"].filter(Boolean).join("、")}</span>
                       </span>
                       <TagSelector options={cleanedCols.filter(c => c !== depVar)} selected={treatmentVar ? [treatmentVar] : []} onChange={v => {
                         const newVal = v[0] || "";
                         setTreatmentVar(newVal);
-                        if (needsPSM && newVal) {
+                        if (needsPSMConfig && newVal) {
                           setIndepVars(prev => prev.filter(c => c !== newVal));
                           setControlVars(prev => prev.filter(c => c !== newVal));
                         }
@@ -2275,9 +2425,11 @@ export default function Home() {
                     </div>
                   </div>
                 )}
-                {needsPSM && (
+                {needsPSMConfig && (
                   <div className="config-group">
-                    <div className="config-group-title">PSM 配置</div>
+                    <div className="config-group-title">
+                      {[needsPSM && "PSM", needsPSMDID && "PSM-DID"].filter(Boolean).join(" / ")} 配置
+                    </div>
                     <div className="var-row">
                       <span className="vl">近邻数 <span className="vh">每个处理组个体匹配的对照组个体数量，默认1（最近邻）</span></span>
                       <input className="threshold-input" type="number" min="1" max="10" value={psmNeighbors}
@@ -2298,15 +2450,18 @@ export default function Home() {
                     </div>
                     <div className="var-row">
                       <span className="vl">政策时点 Policy Time <span className="vh">政策实施的年份，≥该值视为政策后</span></span>
-                      <input className="threshold-input" type="number" value={policyTime}
-                        onChange={e => setPolicyTime(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                      <input className="threshold-input" type="text" inputMode="numeric" value={policyTime}
+                        onChange={e => { if (/^-?\d*$/.test(e.target.value)) setPolicyTime(e.target.value); }}
+                        onFocus={e => e.target.select()}
                         placeholder="如 2015" />
                     </div>
                   </div>
                 )}
-                {needsDIDEvent && (
+                {(needsDIDEvent || needsPSMDID) && (
                   <div className="config-group">
-                    <div className="config-group-title">DID事件研究 配置</div>
+                    <div className="config-group-title">
+                      {[needsDIDEvent && "DID事件研究", needsPSMDID && "PSM-DID"].filter(Boolean).join(" / ")} 配置
+                    </div>
                     <div className="var-row">
                       <span className="vl">处理时间列（交错处理）<span className="vh">可选。各个体政策实施年份（整数），控制组留空即可，系统将空值识别为"从未受处理"；若不填则使用下方/上方统一政策时点</span></span>
                       <TagSelector options={cleanedCols.filter(c => c !== depVar && c !== treatmentVar)} selected={treatTimeVar ? [treatTimeVar] : []} onChange={v => setTreatTimeVar(v[0] || "")} single dtypes={cleanedData?.dtypes} />
@@ -2319,8 +2474,9 @@ export default function Home() {
                     {!treatTimeVar && !needsDID && (
                       <div className="var-row">
                         <span className="vl">政策时点 Policy Time <span className="vh">同质处理：所有处理组统一的政策实施年份</span></span>
-                        <input className="threshold-input" type="number" value={policyTime}
-                          onChange={e => setPolicyTime(e.target.value === "" ? "" : parseFloat(e.target.value))}
+                        <input className="threshold-input" type="text" inputMode="numeric" value={policyTime}
+                          onChange={e => { if (/^-?\d*$/.test(e.target.value)) setPolicyTime(e.target.value); }}
+                          onFocus={e => e.target.select()}
                           placeholder="如 2015" />
                       </div>
                     )}
@@ -2540,6 +2696,13 @@ export default function Home() {
                         </div>
                       );
                     })()}
+                    {analyzeResults.results?.psm_did && (
+                      <>
+                        <PSMDIDResult data={analyzeResults.results.psm_did} />
+                        <RegressionTable data={analyzeResults.results.psm_did.twfe} label="PSM-DID 双向固定效应估计（_did 系数即 ATT）" />
+                        <EventStudyTable data={analyzeResults.results.psm_did.event_study} />
+                      </>
+                    )}
                     {analyzeResults.interpretation && (
                       <div className="interp-result">
                         <div className="ir-title">AI 解读</div>

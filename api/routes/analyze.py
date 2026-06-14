@@ -24,6 +24,7 @@ from services.stats import (
     run_probit,
     run_logit,
     run_psm,
+    run_psm_did,
 )
 from services.interpreter import interpret_results
 from services.session_store import load_cleaned, save_cleaned
@@ -33,7 +34,7 @@ router = APIRouter()
 
 # 需激活码解锁的高级分析类型（2026-06-13 方案：单一共享码统一解锁，详见 docs/STATUS.md）
 # 范围：本次新增的高级功能（PSM/DID稳健性检验/Probit/Logit）；已上线的免费功能不纳入锁定
-RESTRICTED_ANALYSIS_TYPES: set = {"psm", "did_robustness", "probit", "logit"}
+RESTRICTED_ANALYSIS_TYPES: set = {"psm", "did_robustness", "probit", "logit", "psm_did"}
 
 # 单次分析请求超时熔断：避免某个分析组合在大数据上长时间占满 CPU 拖垮整机
 # （2026-06-12 曾出现 panel_fe/pca/did/moderation/heterogeneity 组合卡死近9小时）
@@ -128,6 +129,27 @@ def _gen_analyze_do(req: AnalysisRequest) -> str:
         lines.append("* 倾向得分匹配 PSM（需 ssc install psmatch2）")
         lines.append(f"psmatch2 {req.treatment_var} {' '.join(covariates)}, outcome({req.dep_var}) neighbor({k}){caliper_opt} logit")
         lines.append("pstest " + " ".join(covariates) + "  // 平衡性检验（标准化均值差）")
+
+    if "psm_did" in req.analysis_types and req.dep_var and req.entity_var and req.time_var and req.treatment_var:
+        covariates = (req.indep_vars or []) + (req.control_vars or [])
+        k = req.psm_neighbors or 1
+        caliper_opt = f" caliper({req.psm_caliper})" if req.psm_caliper is not None else ""
+        se_opt = f", cluster({req.cluster_var})" if req.cluster_var else (", robust" if req.robust_se else "")
+        lines.append("* PSM-DID 基期锁定匹配（需 ssc install psmatch2；以下为基期截面示例，多block需逐个重复）")
+        if req.treat_time_var:
+            lines.append(f"gen _baseline_year = {req.treat_time_var} - 1  // 交错处理：各处理组个体按各自基期分别匹配")
+        else:
+            pt = req.policy_time if req.policy_time is not None else "{政策年份}"
+            lines.append(f"local baseline_year = {pt} - 1")
+            lines.append("gen _baseline_year = `baseline_year'")
+        lines.append("* 在 _baseline_year 截面上对处理组与从未受处理个体做PSM匹配：")
+        lines.append(f"psmatch2 {req.treatment_var} {' '.join(covariates)} if year == _baseline_year, outcome({req.dep_var}) neighbor({k}){caliper_opt} logit")
+        lines.append("pstest " + " ".join(covariates) + "  // 平衡性检验（标准化均值差）")
+        lines.append("* 保留匹配成功的处理组个体及其匹配对照个体，还原为面板后做双向固定效应DID：")
+        lines.append("gen _post = (year >= _treat_time)")
+        lines.append(f"gen _did = {req.treatment_var} * _post")
+        lines.append(f"xtset {req.entity_var} {req.time_var}")
+        lines.append(f"xtreg {req.dep_var} _did {' '.join(req.control_vars or [])} i.{req.time_var}, fe{se_opt}")
 
     if "panel_fe" in req.analysis_types and req.dep_var:
         all_x = (req.indep_vars or []) + (req.control_vars or [])
@@ -296,14 +318,14 @@ def run_analysis(req: AnalysisRequest):
             raise HTTPException(status_code=400, detail=f"变量不存在：{missing_cols}")
         # Bug3 Fix: 面板分析必须保留 entity_var / time_var，即使用户没有在 variables 里选它们
         keep = list(req.variables)
-        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did", "did_robustness", "did_event", "heterogeneity")):
+        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did", "did_robustness", "did_event", "heterogeneity", "psm_did")):
             if req.entity_var and req.entity_var not in keep:
                 keep.append(req.entity_var)
             if req.time_var and req.time_var not in keep:
                 keep.append(req.time_var)
         if any(t in req.analysis_types for t in ("did", "did_robustness", "psm")) and req.treatment_var and req.treatment_var not in keep:
             keep.append(req.treatment_var)
-        if "did_event" in req.analysis_types:
+        if any(t in req.analysis_types for t in ("did_event", "psm_did")):
             if req.treatment_var and req.treatment_var not in keep:
                 keep.append(req.treatment_var)
             if req.treat_time_var and req.treat_time_var not in keep:
@@ -484,6 +506,34 @@ def _run_all_analyses(req: "AnalysisRequest", df: pd.DataFrame, df_full: pd.Data
                     covariates=covariates,
                     n_neighbors=req.psm_neighbors or 1,
                     caliper=req.psm_caliper,
+                )
+
+            elif analysis_type == "psm_did":
+                if not req.dep_var or not req.entity_var or not req.time_var:
+                    raise ValueError("PSM-DID 需要指定 dep_var / entity_var / time_var")
+                if not req.treatment_var:
+                    raise ValueError("PSM-DID 需要指定处理组变量 treatment_var")
+                if req.treat_time_var is None and req.policy_time is None:
+                    raise ValueError("PSM-DID 需要指定政策时点（同质处理填 policy_time，交错处理填 treat_time_var）")
+                covariates = (req.indep_vars or []) + (req.control_vars or [])
+                if not covariates:
+                    raise ValueError("PSM-DID 需要指定用于估计倾向得分的协变量（解释变量/控制变量）")
+                results["psm_did"] = run_psm_did(
+                    df,
+                    entity_var=req.entity_var,
+                    time_var=req.time_var,
+                    dep_var=req.dep_var,
+                    treatment_var=req.treatment_var,
+                    covariates=covariates,
+                    treat_time_var=req.treat_time_var,
+                    policy_time=req.policy_time,
+                    n_neighbors=req.psm_neighbors or 1,
+                    caliper=req.psm_caliper,
+                    window_pre=req.window_pre if req.window_pre is not None else 3,
+                    window_post=req.window_post if req.window_post is not None else 5,
+                    control_vars=req.control_vars or [],
+                    robust_se=req.robust_se,
+                    cluster_var=req.cluster_var,
                 )
 
             elif analysis_type == "did_robustness":

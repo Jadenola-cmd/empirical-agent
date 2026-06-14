@@ -4,7 +4,7 @@
 
 平台已上线，核心功能完整可用：
 - 数据清洗：多文件上传（CSV/xlsx/dta）、合并、删除重复值、缺失值/异常值处理、批量对数变换、缩尾处理（Winsorize）、滞后变量生成、列操作、Stata do 生成
-- 实证分析：描述统计、相关系数矩阵、主成分分析 PCA、OLS/FE/RE 回归、Probit/Logit、Hausman 检验、面板平衡性检查、调节效应分析、中介效应分析（Baron-Kenny 三步法 + Sobel 检验）、异质性分析（分组回归对比）、双重差分 DID（含稳健性检验包）、工具变量法 2SLS、PSM 倾向得分匹配、AI 解读
+- 实证分析：描述统计、相关系数矩阵、主成分分析 PCA、OLS/FE/RE 回归、Probit/Logit、Hausman 检验、面板平衡性检查、调节效应分析、中介效应分析（Baron-Kenny 三步法 + Sobel 检验）、异质性分析（分组回归对比）、双重差分 DID（含稳健性检验包）、工具变量法 2SLS、PSM 倾向得分匹配（含 PSM-DID 基期锁定匹配）、AI 解读
 - 分析方法卡片按类别分组展示（数据探索 / 主回归分析 / 因果识别 / 机制检验 / 稳健性检验），由 `ANALYSIS_REGISTRY` 配置驱动
 - 导出：Excel、Stata do 文件、纯文本（需激活码解锁）
 - 高级功能激活码门控：Probit/Logit/PSM/DID稳健性检验 + 全部导出功能需激活码解锁，单一共享码，前后端双重校验
@@ -27,13 +27,19 @@
 
 > 2026-06-14：PSM 平衡性检验输出改为对照 Stata `pstest` 格式——`run_psm` 新增匹配权重追踪（记录每个对照组观测被用作匹配对象的次数/n_neighbors），平衡性表按协变量拆成 Unmatched/Matched 两行，分别给出处理组均值、（加权）对照组均值、%Bias、组间t检验，并新增 %Reduct|Bias|（匹配后偏差缩减比例）；新增 `balance_summary`（Pseudo R²、LR χ²及其p值、匹配前后 Mean/Median |Bias|）。前端 `PSMTable` 与 Excel 导出同步改版为两行式表格。已用 `test_data_psm_did.csv` 验证计算无报错。另：记录两项待讨论债务到 `docs/DEBT.md`——① `did_robustness` 仅支持同质处理时点，与 `did_event` 的交错处理时点（`treat_time_var`）不一致，需后续支持；② `run_psm` 对面板数据采用混合(pooled)匹配而非截面分期匹配，存在伪重复风险，需与用户讨论是否改为基准期截面匹配。
 
+> 2026-06-14（续）：修复"政策时点 Policy Time"输入框输入年份变负数的bug（用户截图复现，实际值变为 `-2`）。根因为 `type="number"` 受控组件陷阱：先输入 `-` 时 `e.target.value` 返回 `""`，state 未变化导致 React 跳过DOM更新，残留的 `-` 与后续输入的数字拼接成负数。修复为 `type="text"` + `inputMode="numeric"` + 正则 `/^-?\d*$/` 校验，两处输入框（DID配置、DID事件研究配置）同步修改。`npx next build` 编译通过，已实机验证修复有效。
+
+> 2026-06-15：PSM-DID 基期锁定匹配（`psm_did`）按既定设计一次性实现并合并到本分支：后端抽取 `_psm_match_core`/`_psm_balance_table` 供 `run_psm`/`run_psm_did` 共用（`run_psm` 输出不变），新增 `run_psm_did`（基期截面分block匹配 + 面板还原 + 双向FE-DID + 事件研究，统一支持同质`policy_time`/交错`treat_time_var`）；路由注册并纳入 `RESTRICTED_ANALYSIS_TYPES`，新增do文件片段；前端新增卡片、配置区复用、`PSMDIDResult`结果组件、Excel导出三个sheet。已用 `test_data_psm_did.csv` 分别验证同质/交错两种模式，`npx next build` 编译通过。
+
+> 2026-06-15（续）：实机QA `psm_did` 时发现并修复——TWFE/事件研究回归未把"匹配协变量"纳入控制变量（前端互斥逻辑导致用户选了匹配协变量后控制变量框无法重复选择，TWFE表里只有`_did`一项）；改为 `regression_controls = 匹配协变量∪控制变量`（去重）传入两处回归，匹配协变量自动同时作为回归控制变量。重新生成测试数据 `AI_Output/Claude/test_data_psm_did.csv`（50个体×10年，25个交错处理个体三波2018/2019/2020 + 25个从未处理个体，含动态效应与一处故意基期缺失），原根目录测试文件已移除。另发现清洗流程默认"删除缺失值行"会误删 `treat_time_var` 的"从未受处理"标记行，记入 `docs/DEBT.md`。
+
 ## 进行中
 
-- [ ] PSM按截面分期匹配 vs 当前混合匹配：待与用户讨论是否需要改造（涉及基准期选择、面板转截面、匹配结果映射回面板等设计），详见 `docs/DEBT.md`
 - [ ] `did_robustness` 支持交错处理时点（`treat_time_var`），与 `did_event` 配置保持一致，详见 `docs/DEBT.md`
 
 ## 下次会话优先处理
 
+- [ ] 实机QA：`psm_did` 在浏览器中实际跑一遍（含同质/交错两种配置、激活码门控、Excel导出三个sheet展示是否正常）
 - [ ] 实机QA "02 变量配置"重排：覆盖单选每种分析类型 + 常见组合（PSM+DID、PSM+DID稳健性检验、调节+中介+异质性等），确认字段显隐与归属符合预期，再考虑提交PR/合并到main
 
 ## 待办
