@@ -2401,7 +2401,7 @@ export default function Home() {
                     )}
                     <div className="var-row">
                       <span className="vl">控制变量 <span className="vh">可不选</span></span>
-                      <TagSelector options={cleanedCols.filter(c => c !== depVar && !indepVars.includes(c) && c !== moderatorVar && c !== treatmentVar && c !== mediatorVar && c !== groupVar && !endogVars.includes(c) && !instrumentVars.includes(c))} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
+                      <TagSelector options={cleanedCols.filter(c => c !== depVar && (needsPSMConfig || !indepVars.includes(c)) && c !== moderatorVar && c !== treatmentVar && c !== mediatorVar && c !== groupVar && !endogVars.includes(c) && !instrumentVars.includes(c))} selected={controlVars} onChange={setControlVars} dtypes={cleanedData?.dtypes} />
                     </div>
                     {needsSE && (
                       <div className="var-row">

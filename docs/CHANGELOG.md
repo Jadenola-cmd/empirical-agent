@@ -21,6 +21,11 @@
   - Excel导出"DID稳健性检验"sheet新增模式/处理组个体数/安慰剂系数分布原始数据。
 - 已用 `test_data_psm_did.csv` 分别验证同质模式（`policy_time=2018`）与交错模式（`treat_time_var=treat_time`）均正常返回，以及未指定任一时点参数时报错提示正确；`npx next build` 编译通过。
 
+**修复：PSM/PSM-DID 场景下"控制变量"与"匹配协变量"互斥选择，导致 `did_robustness` 无法把匹配协变量同时纳入回归控制变量**
+- `pages/index.js`"控制变量"选择器原过滤掉所有已选入"解释变量X/匹配协变量"（`indepVars`）的列；当 `psm`/`psm_did` 选中时该列承载"匹配协变量"语义，与"控制变量"是两组不同回归的输入，不应互斥——但旧逻辑导致用户无法把同一变量同时选为匹配协变量和控制变量，进而无法让 `did_robustness` 的回归纳入这些变量。
+- 改为仅在 `needsPSMConfig`（即 `psm`/`psm_did` 选中）时放开该互斥（`needsPSMConfig || !indepVars.includes(c)`），其余分析类型（ols/moderation等"解释变量X"语义）维持原互斥，避免同一变量重复进入同一回归的 `all_x_vars` 造成重复列。
+- `npx next build` 编译通过。
+
 ---
 
 ## 2026-06-15

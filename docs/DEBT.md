@@ -24,6 +24,8 @@
 **Railway 不会自动跟着 feature 分支部署**
 平台同时跑在腾讯云（国内）和 Vercel+Railway（国外）两套环境，详见 `CLAUDE.md` 部署章节。Vercel 默认对每个分支/PR 都生成预览部署，但 Railway 默认只监听项目里配置的那一个分支（通常是 `main`），推送 feature 分支不会触发 Railway 自动部署。如需在 Railway 上预览 feature 分支效果，须去 Railway 控制台手动为该分支配置独立 environment。
 
+> 2026-06-15：`feature/did-robustness-staggered` 分支已在 Railway 手动配置好独立 environment（用户确认"已为当前分支单独配置好了"），可直接用 Vercel 该分支的预览部署进行实机QA。此为按分支手动配置，并非全局自动跟踪——后续新建的 feature 分支如需 Railway 预览，仍需重复此手动配置步骤。
+
 **缩尾处理生成的 Stata 片段依赖 `winsor2`（非内置命令）**
 清洗步骤生成的 `winsor2 ..., cuts(...) replace` 不是 Stata 自带命令，用户需先在 Stata 里执行 `ssc install winsor2` 才能运行。平台无法控制用户的 Stata 环境，已在生成的 do 片段中加注释提示，但仍可能有用户忽略导致报错。
 
