@@ -8,13 +8,17 @@
 """
 import json
 import os
+import sys
 import urllib.request
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+sys.path.insert(0, os.path.dirname(__file__))
+from analysis_usage_report import ANALYSIS_TYPE_LABELS  # noqa: E402
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 EVENTS_FILE = os.path.join(BASE_DIR, "events.jsonl")
@@ -136,6 +140,50 @@ def build_card(target_date):
             ],
             "rows": rank_rows,
         })
+
+        # 分析功能使用情况（按 analysis_success 拆分 analysis_types，统计 PV/UV 及占比）
+        analysis_events = [e for e in events if e["event"] == "analysis_success"]
+        if analysis_events:
+            type_stats = defaultdict(lambda: {"count": 0, "visitors": set()})
+            for e in analysis_events:
+                visitor = e.get("visitor_id")
+                types = (e.get("props") or {}).get("analysis_types") or []
+                for t in types:
+                    type_stats[t]["count"] += 1
+                    if visitor:
+                        type_stats[t]["visitors"].add(visitor)
+
+            total_count = sum(v["count"] for v in type_stats.values())
+            total_uv = len(set().union(*(v["visitors"] for v in type_stats.values())))
+
+            usage_rows = []
+            for analysis_type, v in sorted(type_stats.items(), key=lambda kv: kv[1]["count"], reverse=True):
+                count = v["count"]
+                uv = len(v["visitors"])
+                usage_rows.append({
+                    "name": ANALYSIS_TYPE_LABELS.get(analysis_type, analysis_type),
+                    "pv": count,
+                    "pv_pct": f"{count / total_count * 100:.0f}%" if total_count else "—",
+                    "uv": uv,
+                    "uv_pct": f"{uv / total_uv * 100:.0f}%" if total_uv else "—",
+                })
+
+            elements.append({"tag": "hr"})
+            elements.append({"tag": "markdown", "content": "**分析功能使用情况**（按当日 analysis_success 事件统计）"})
+            elements.append({
+                "tag": "table",
+                "page_size": 20,
+                "row_height": "low",
+                "header_style": {"bold": True, "background_style": "grey", "text_align": "left"},
+                "columns": [
+                    {"name": "name", "display_name": "分析功能", "data_type": "text"},
+                    {"name": "pv", "display_name": "PV", "data_type": "number", "horizontal_align": "right"},
+                    {"name": "pv_pct", "display_name": "PV占比", "data_type": "text", "horizontal_align": "right"},
+                    {"name": "uv", "display_name": "UV", "data_type": "number", "horizontal_align": "right"},
+                    {"name": "uv_pct", "display_name": "UV占比", "data_type": "text", "horizontal_align": "right"},
+                ],
+                "rows": usage_rows,
+            })
 
         # 申请试用弹窗
         shown = ev_counter.get("trial_modal_shown", 0)

@@ -4,6 +4,11 @@
 
 ---
 
+## 2026-06-15（续5）
+
+**飞书机器人日报新增"分析功能使用情况"表格（PV/UV及占比）**
+- `api/scripts/daily_report.py`：复用 `analysis_usage_report.py` 的 `ANALYSIS_TYPE_LABELS`，在"功能使用排名"之后新增表格，按当日 `analysis_success` 事件的 `props.analysis_types` 拆分统计各分析功能的 PV（次数）、PV占比、UV（独立访客数）、UV占比。
+
 ## 2026-06-15（续）
 
 **新增：`did_robustness` 支持交错处理时点（`treat_time_var`），并完善输出**
