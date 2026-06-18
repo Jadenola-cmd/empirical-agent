@@ -9,6 +9,7 @@
 import json
 import os
 import sys
+import time
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -251,19 +252,30 @@ def build_card(target_date):
     }
 
 
-def send_to_feishu(card_payload):
+def send_to_feishu(card_payload, max_retries=3, retry_delay=10):
     webhook_url = os.environ.get("FEISHU_WEBHOOK_URL")
     if not webhook_url:
         raise RuntimeError("环境变量 FEISHU_WEBHOOK_URL 未设置")
     payload = json.dumps(card_payload).encode("utf-8")
-    req = urllib.request.Request(
-        webhook_url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
-    if result.get("code") != 0:
-        raise RuntimeError(f"飞书推送失败: {result}")
-    return result
+
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            req = urllib.request.Request(
+                webhook_url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            if result.get("code") != 0:
+                raise RuntimeError(f"飞书推送失败: {result}")
+            return result
+        except Exception as e:
+            last_error = e
+            print(f"[尝试 {attempt}/{max_retries}] 飞书推送失败: {e}", file=sys.stderr)
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+
+    raise RuntimeError(f"飞书推送重试 {max_retries} 次后仍失败: {last_error}")
 
 
 if __name__ == "__main__":
