@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-18
+
+**修复飞书日报偶发静默漏发问题**
+- 排查：服务器 root crontab 中 `0 9 * * * ... daily_report.py` 配置无误，按时执行，但 `send_to_feishu` 推送失败（飞书侧返回 `frequency limited`/`internal error` 等瞬时错误）时直接抛异常退出，无重试，导致当天日报静默漏发（仅写进日志，无人察觉）。
+- 修复：`send_to_feishu` 新增重试机制（最多3次，每次间隔10秒），仍全部失败才抛出异常。已部署并手动验证推送成功。
+
+## 2026-06-15（续6）
+
+**修复"01 参与分析的变量"与"02 变量配置"组合使用时 OLS/调节/中介等报 "None of [...] are in the columns"**
+- 根因：`routes/analyze.py` 中 `req.variables`（用于限定描述统计/相关系数/PCA 范围）若未包含 OLS/调节/中介/面板/DID/IV/PSM 等用到的 dep_var/indep_vars/control_vars 等变量，`df = df[keep]` 会把这些列砍掉，导致后续分析在 `df[cols_needed]` 时报列不存在。
+- 修复：构造 `keep` 时额外纳入 dep_var/indep_vars/control_vars/endog_vars/instrument_vars/moderator_var/mediator_var/group_var/cluster_var/treatment_var/treat_time_var/entity_var/time_var（去重、且需存在于原始数据），不再按分析类型逐一判断；`numeric_cols`（用于描述统计/相关系数）改为基于原始 `req.variables` 计算，不受新增保留列影响。
+
 ## 2026-06-15（续5）
 
 **飞书机器人日报新增"分析功能使用情况"表格（PV/UV及占比）**

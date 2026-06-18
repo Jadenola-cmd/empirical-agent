@@ -39,8 +39,13 @@
 
 > 2026-06-15（续4）：实机QA `did_robustness` 交错模式（Railway测试环境）发现并修复两个问题——①"控制变量"选择器与"匹配协变量"（`indepVars`）互斥，`psm`/`psm_did` 选中时无法把同一变量同时选为控制变量，改为仅在 `needsPSMConfig` 时放开互斥；②安慰剂检验100次重复 `run_panel`（PanelOLS）在 Railway 环境CPU冲到2vCPU以上触发90秒超时熔断（本地约14秒，Railway更弱被放大），改为预计算双向固定效应去均值（`_two_way_demean`）+ 每次迭代仅做一次 `lstsq`，耗时降到约0.5秒，系数误差<1e-6。用户确认修复后正常，**`did_robustness` 交错模式QA通过**。
 
+> 2026-06-18：排查飞书日报偶发未发问题——cron（`0 9 * * *`）执行正常，根因是飞书 API 偶发返回 `frequency limited`/`internal error` 等瞬时错误时脚本直接抛异常退出、无重试，导致静默漏发。`daily_report.py` 的 `send_to_feishu` 已加重试机制（最多3次/间隔10秒），已部署腾讯云并手动验证推送成功。
+
+> 2026-06-15（续6）：修复用户反馈的生产报错——勾选 DESCRIPTIVE+PCA+OLS+MODERATION+MEDIATION 等组合时，若"01 参与分析的变量"（`req.variables`，限定描述统计/PCA范围）未包含 OLS/调节/中介的 dep_var/indep_vars/control_vars，`routes/analyze.py` 的 `df = df[keep]` 会把这些列砍掉，导致 OLS/moderation/mediation 报 `None of [...] are in the columns`。已改为：构造 `keep` 时统一额外纳入 dep_var/indep_vars/control_vars/endog_vars/instrument_vars/moderator_var/mediator_var/group_var/cluster_var/treatment_var/treat_time_var/entity_var/time_var；`numeric_cols`（描述统计/相关系数用）改为基于原始 `req.variables` 计算，不受影响。**尚未实机QA**，建议下次会话用该场景验证（同时勾选01变量范围较小 + 02配置变量在01之外的组合）。
+
 ## 下次会话优先处理
 
+- [ ] 实机QA：`routes/analyze.py` "01变量范围 + 02配置变量在01之外"组合的修复（同时勾选 DESCRIPTIVE+OLS/MODERATION/MEDIATION 等，01只选部分变量，02的dep_var/indep_vars/control_vars选01之外的列，确认不再报"None of [...] are in the columns"且描述统计范围不受影响）
 - [ ] 实机QA：`psm_did` 在浏览器中实际跑一遍（含同质/交错两种配置、激活码门控、Excel导出三个sheet展示是否正常）
 - [ ] 实机QA "02 变量配置"重排：覆盖单选每种分析类型 + 常见组合（PSM+DID、PSM+DID稳健性检验、调节+中介+异质性等），确认字段显隐与归属符合预期，再考虑提交PR/合并到main
 
