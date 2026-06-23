@@ -43,6 +43,8 @@
 
 > 2026-06-15（续6）：修复用户反馈的生产报错——勾选 DESCRIPTIVE+PCA+OLS+MODERATION+MEDIATION 等组合时，若"01 参与分析的变量"（`req.variables`，限定描述统计/PCA范围）未包含 OLS/调节/中介的 dep_var/indep_vars/control_vars，`routes/analyze.py` 的 `df = df[keep]` 会把这些列砍掉，导致 OLS/moderation/mediation 报 `None of [...] are in the columns`。已改为：构造 `keep` 时统一额外纳入 dep_var/indep_vars/control_vars/endog_vars/instrument_vars/moderator_var/mediator_var/group_var/cluster_var/treatment_var/treat_time_var/entity_var/time_var；`numeric_cols`（描述统计/相关系数用）改为基于原始 `req.variables` 计算，不受影响。**尚未实机QA**，建议下次会话用该场景验证（同时勾选01变量范围较小 + 02配置变量在01之外的组合）。
 
+> 2026-06-22：首次做完整转化数据分析（`api/scripts/analyze_data.py`，详见 `CHANGELOG.md` 同日条目）。核心结论：剔除噪音/自测访客后真实访客仅105人（12天），样本量远不足以支撑产品决策；当前阶段最大瓶颈是**流量太低**，不是某个具体转化环节的优化空间。过程中发现几个后续待处理项见下方"待办"。
+
 ## 下次会话优先处理
 
 - [ ] 实机QA：`routes/analyze.py` "01变量范围 + 02配置变量在01之外"组合的修复（同时勾选 DESCRIPTIVE+OLS/MODERATION/MEDIATION 等，01只选部分变量，02的dep_var/indep_vars/control_vars选01之外的列，确认不再报"None of [...] are in the columns"且描述统计范围不受影响）
@@ -50,6 +52,13 @@
 - [ ] 实机QA "02 变量配置"重排：覆盖单选每种分析类型 + 常见组合（PSM+DID、PSM+DID稳健性检验、调节+中介+异质性等），确认字段显隐与归属符合预期，再考虑提交PR/合并到main
 
 ## 待办
+
+### 增长与埋点（2026-06-22 转化数据分析中发现，待处理）
+
+- [ ] **流量太低是当前第一瓶颈**：剔除噪音后仅105个真实访客/12天，门控上线后72人仅5个付费转化。样本量不足以支撑任何"改文案/改流程提升转化率"的决策——这类动作做了也验证不了有没有效。下次应优先想办法把流量做起来，再回头看这次发现的几个模式是否稳定。
+- [ ] **埋点内部流量标记**：`pages/index.js` 的 `getVisitorId()`/`track()` 目前无法区分开发者自测/同行探测流量和真实用户，本次靠人工核对IP+UA才识别出2个异常visitor（其中一个还是06-12服务器卡死故障的真实触发者）。计划：访问时带 `?qa=1` 等参数写入 `localStorage.is_internal=1`，`track()` 上报时带上该标记，后端/分析脚本据此过滤，避免未来数据继续被自测污染。
+- [ ] **移动端访客100%在首屏跳出**：本次分析（按nginx日志UA反查设备类型）发现27个移动端访客（占26%）无一人上传过文件，结构性流失，非文案问题。低成本动作：移动端访问时加"建议电脑访问"提示，不指望移动端转化。
+- [ ] **用户调研弹窗方案**：讨论后确认浏览器限制下"关闭窗口时弹自定义问卷"不可行（`beforeunload` 只能弹原生确认框，无法自定义/收集表单）。如需做主动调研，应改为"停留行为触发"（如停留超过20-30秒未上传时弹一句话问卷），覆盖桌面+移动端，比依赖鼠标移动的exit-intent更可靠。尚未实现，待流量问题缓解后再评估是否需要。
 
 ### 优先级（2026-06-13 评估，按性价比排序，第一/第二梯队已完成）
 
