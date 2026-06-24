@@ -327,33 +327,32 @@ def run_analysis(req: AnalysisRequest):
         missing_cols = [v for v in req.variables if v not in df.columns]
         if missing_cols:
             raise HTTPException(status_code=400, detail=f"变量不存在：{missing_cols}")
-        # Bug3 Fix: 面板分析必须保留 entity_var / time_var，即使用户没有在 variables 里选它们
+        # "01 参与分析的变量"仅用于限定描述统计/相关系数/PCA 的范围；
+        # 其余分析类型（OLS/调节/中介/面板/DID/IV/PSM 等）用到的变量即使未勾选在这里，
+        # 也必须保留，否则 df[keep] 之后会因列缺失报 "None of [...] are in the [columns]"
+        numeric_cols = df[req.variables].select_dtypes(include="number").columns.tolist()
         keep = list(req.variables)
-        if any(t in req.analysis_types for t in ("panel_fe", "panel_re", "panel_balance", "did", "did_robustness", "did_event", "heterogeneity", "psm_did")):
-            if req.entity_var and req.entity_var not in keep:
-                keep.append(req.entity_var)
-            if req.time_var and req.time_var not in keep:
-                keep.append(req.time_var)
-        if any(t in req.analysis_types for t in ("did", "did_robustness", "psm")) and req.treatment_var and req.treatment_var not in keep:
-            keep.append(req.treatment_var)
-        if any(t in req.analysis_types for t in ("did_event", "psm_did", "did_robustness")):
-            if req.treatment_var and req.treatment_var not in keep:
-                keep.append(req.treatment_var)
-            if req.treat_time_var and req.treat_time_var not in keep:
-                keep.append(req.treat_time_var)
-        if "moderation" in req.analysis_types and req.moderator_var and req.moderator_var not in keep:
-            keep.append(req.moderator_var)
-        if "mediation" in req.analysis_types and req.mediator_var and req.mediator_var not in keep:
-            keep.append(req.mediator_var)
-        if "heterogeneity" in req.analysis_types and req.group_var and req.group_var not in keep:
-            keep.append(req.group_var)
-        if "iv" in req.analysis_types:
-            for v in (req.endog_vars or []) + (req.instrument_vars or []):
-                if v not in keep:
-                    keep.append(v)
+        extra_vars = (
+            ([req.dep_var] if req.dep_var else [])
+            + (req.indep_vars or [])
+            + (req.control_vars or [])
+            + (req.endog_vars or [])
+            + (req.instrument_vars or [])
+            + ([req.moderator_var] if req.moderator_var else [])
+            + ([req.mediator_var] if req.mediator_var else [])
+            + ([req.group_var] if req.group_var else [])
+            + ([req.cluster_var] if req.cluster_var else [])
+            + ([req.treatment_var] if req.treatment_var else [])
+            + ([req.treat_time_var] if req.treat_time_var else [])
+            + ([req.entity_var] if req.entity_var else [])
+            + ([req.time_var] if req.time_var else [])
+        )
+        for v in extra_vars:
+            if v not in keep and v in df.columns:
+                keep.append(v)
         df = df[keep]
-
-    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    else:
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
 
     try:
         results, errors = _analysis_executor.submit(
