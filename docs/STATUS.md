@@ -49,7 +49,7 @@
 
 ## 下次会话优先处理
 
-- [ ] 部署并验证：06-24修复的Excel导出缺失调节效应/中介效应/异质性分析三类sheet（`pages/index.js` `exportXlsx`），需推送+触发腾讯云/Vercel两套部署后让反馈此问题的用户实际下载验证
+- [ ] 验证：06-24修复的Excel导出缺失调节效应/中介效应/异质性分析三类sheet——已推送（commit c8ac20d）并完成腾讯云部署（Vercel自动构建中），待让反馈此问题的用户实际下载确认
 - [ ] 实机QA：`routes/analyze.py` "01变量范围 + 02配置变量在01之外"组合的修复（同时勾选 DESCRIPTIVE+OLS/MODERATION/MEDIATION 等，01只选部分变量，02的dep_var/indep_vars/control_vars选01之外的列，确认不再报"None of [...] are in the columns"且描述统计范围不受影响）
 - [ ] 实机QA：`psm_did` 在浏览器中实际跑一遍（含同质/交错两种配置、激活码门控、Excel导出三个sheet展示是否正常）
 - [ ] 实机QA "02 变量配置"重排：覆盖单选每种分析类型 + 常见组合（PSM+DID、PSM+DID稳健性检验、调节+中介+异质性等），确认字段显隐与归属符合预期，再考虑提交PR/合并到main
