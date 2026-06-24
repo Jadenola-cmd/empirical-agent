@@ -315,6 +315,74 @@ function exportXlsx(analyzeResults, cleanedData) {
     if (r.panel_re) { const ws = buildRegSheet(r.panel_re, "随机效应回归（xtreg, re）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "随机效应"); }
     if (r.probit) { const ws = buildRegSheet(r.probit, "Probit 回归结果"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "Probit"); }
     if (r.logit) { const ws = buildRegSheet(r.logit, "Logit 回归结果"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "Logit"); }
+    if (r.moderation) { const ws = buildRegSheet(r.moderation, "调节效应回归（交互项，已中心化）"); if (ws) XLSX.utils.book_append_sheet(wb, ws, "调节效应"); }
+
+    if (r.mediation) {
+      const md = r.mediation;
+      const steps = [
+        { label: "总效应 c", data: md.step1 },
+        { label: "路径 a", data: md.step2 },
+        { label: "路径 b / c'", data: md.step3 },
+      ];
+      function getC(stepData, v) { return stepData?.coefficients?.find(c => c.variable === v); }
+      function fmt(c) { return c ? [`${(c.coef?.toFixed(3) ?? "—")}${c.sig}`, `(${c.t_stat?.toFixed(2) ?? "—"})`] : ["—", ""]; }
+      const rows = [["中介效应检验结果（Baron-Kenny 三步法）"]];
+      rows.push(["", ...steps.map((s, i) => `(${i + 1}) ${s.label}`)]);
+      rows.push(["dep_var", ...steps.map(s => s.data?.dep_var)]);
+      rows.push([]);
+      const [iv1, iv2] = fmt(getC(md.step1, md.indep_var));
+      const [iv3, iv4] = fmt(getC(md.step2, md.indep_var));
+      const [iv5, iv6] = fmt(getC(md.step3, md.indep_var));
+      rows.push([md.indep_var, iv1, iv3, iv5]);
+      rows.push(["", iv2, iv4, iv6]);
+      const [m1, m2] = fmt(getC(md.step3, md.mediator_var));
+      rows.push([md.mediator_var, "—", "—", m1]);
+      rows.push(["", "", "", m2]);
+      if (md.control_vars?.length) rows.push(["控制变量", "Yes", "Yes", "Yes"]);
+      rows.push(["N", ...steps.map(s => s.data?.n)]);
+      rows.push(["R²", ...steps.map(s => s.data?.r2?.toFixed(3) ?? "—")]);
+      rows.push([]);
+      rows.push([`判定结论：${md.mediation_type}`]);
+      rows.push([md.conclusion]);
+      if (md.sobel) {
+        rows.push([]);
+        rows.push(["Sobel 检验（间接效应 a×b 显著性）"]);
+        rows.push([`间接效应=${md.sobel.indirect_effect}`, `SE=${md.sobel.se}`, `z=${md.sobel.z_stat}${md.sobel.sig}`, `p=${md.sobel.p_value}`]);
+      }
+      rows.push([]);
+      rows.push([md.notes || "括号内为t值，***p<0.01, **p<0.05, *p<0.1"]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "中介效应");
+    }
+
+    if (r.heterogeneity?.groups?.length) {
+      const ht = r.heterogeneity;
+      const valid = ht.groups.filter(g => g.result?.coefficients?.length);
+      if (valid.length) {
+        const seenV = new Set();
+        const mainVars = [];
+        valid.forEach(g => g.result.coefficients.forEach(c => {
+          if (c.variable !== "_cons" && !seenV.has(c.variable)) { seenV.add(c.variable); mainVars.push(c.variable); }
+        }));
+        const hasCons = valid.some(g => g.result.coefficients.some(c => c.variable === "_cons"));
+        const isPanel = ht.model_type === "fe";
+        function getC(g, v) { return g.result?.coefficients?.find(c => c.variable === v); }
+        const rows = [[`异质性分析 · 分组对比（按 ${ht.group_var} 拆分）`]];
+        rows.push(["", ...ht.groups.map((g, i) => `(${i + 1}) ${g.label}`)]);
+        mainVars.forEach(v => {
+          rows.push([v, ...ht.groups.map(g => { const c = getC(g, v); return c ? `${(c.coef?.toFixed(3) ?? "—")}${c.sig}` : "—"; })]);
+          rows.push(["", ...ht.groups.map(g => { const c = getC(g, v); return c ? `(${c.t_stat?.toFixed(2) ?? "—"})` : ""; })]);
+        });
+        if (hasCons) {
+          rows.push(["_cons", ...ht.groups.map(g => { const c = getC(g, "_cons"); return c ? `${(c.coef?.toFixed(3) ?? "—")}${c.sig}` : "—"; })]);
+          rows.push(["", ...ht.groups.map(g => { const c = getC(g, "_cons"); return c ? `(${c.t_stat?.toFixed(2) ?? "—"})` : ""; })]);
+        }
+        rows.push(["N", ...ht.groups.map(g => g.result ? g.n : (g.error || "—"))]);
+        rows.push([isPanel ? "R² (within)" : "R²", ...ht.groups.map(g => isPanel ? (g.result?.r2_within?.toFixed(3) ?? "—") : (g.result?.r2?.toFixed(3) ?? "—"))]);
+        rows.push([]);
+        rows.push([ht.notes || "括号内为t值，***p<0.01, **p<0.05, *p<0.1"]);
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "异质性分析");
+      }
+    }
 
     if (r.psm) {
       const ps = r.psm;

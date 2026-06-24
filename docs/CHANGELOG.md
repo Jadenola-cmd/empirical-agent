@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-06-24
+
+**修复 Excel 导出缺失调节效应/中介效应/异质性分析三类结果（用户反馈触发）**
+- 根因：`pages/index.js` 的 `exportXlsx()` 从未引用过 `r.moderation`/`r.mediation`/`r.heterogeneity`——这三类结果在页面上通过 `RegressionTable`/`MediationTable`/`HeterogeneityTable` 正常展示，但导出函数里完全没写对应分支，所以导出永远只有"清洗数据" sheet，没有结果表格。
+- 修复：`moderation` 复用已有 `buildRegSheet`（结构与OLS一致）；新增 `中介效应` sheet（还原 Baron-Kenny 三步法 + Sobel检验展示逻辑）；新增 `异质性分析` sheet（还原分组对比展示逻辑）。`npx next build` 编译通过。
+- 待办：本次为纯前端代码缺口，未涉及后端/数据，无需排查服务器；下次部署（Vercel/腾讯云）后建议用户实际下载验证。
+
 ## 2026-06-22
 
 **首次完整转化数据分析，`api/scripts/analyze_data.py` 补充多项指标**

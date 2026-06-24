@@ -45,8 +45,11 @@
 
 > 2026-06-22：首次做完整转化数据分析（`api/scripts/analyze_data.py`，详见 `CHANGELOG.md` 同日条目）。核心结论：剔除噪音/自测访客后真实访客仅105人（12天），样本量远不足以支撑产品决策；当前阶段最大瓶颈是**流量太低**，不是某个具体转化环节的优化空间。过程中发现几个后续待处理项见下方"待办"。
 
+> 2026-06-24：排查用户反馈"调节效应和异质性分析导出只有清洗数据，没有表格"——根因是纯前端代码缺口，与服务器/数据无关：`pages/index.js` 的 `exportXlsx()` 从未引用过 `r.moderation`/`r.mediation`/`r.heterogeneity`，这三类结果页面展示正常但导出函数里完全没写分支。已补全三个 sheet（详见 `CHANGELOG.md` 同日条目），`npx next build` 编译通过，**尚未部署**，见下方"下次会话优先处理"。
+
 ## 下次会话优先处理
 
+- [ ] 部署并验证：06-24修复的Excel导出缺失调节效应/中介效应/异质性分析三类sheet（`pages/index.js` `exportXlsx`），需推送+触发腾讯云/Vercel两套部署后让反馈此问题的用户实际下载验证
 - [ ] 实机QA：`routes/analyze.py` "01变量范围 + 02配置变量在01之外"组合的修复（同时勾选 DESCRIPTIVE+OLS/MODERATION/MEDIATION 等，01只选部分变量，02的dep_var/indep_vars/control_vars选01之外的列，确认不再报"None of [...] are in the columns"且描述统计范围不受影响）
 - [ ] 实机QA：`psm_did` 在浏览器中实际跑一遍（含同质/交错两种配置、激活码门控、Excel导出三个sheet展示是否正常）
 - [ ] 实机QA "02 变量配置"重排：覆盖单选每种分析类型 + 常见组合（PSM+DID、PSM+DID稳健性检验、调节+中介+异质性等），确认字段显隐与归属符合预期，再考虑提交PR/合并到main
